@@ -1,26 +1,3 @@
-import regimesData from "@/data/regime_predictions.json";
-import basketsData from "@/data/factor_baskets.json";
-import factorReturnsData from "@/data/factor_returns.json";
-import factorDiagnosticsData from "@/data/factor_diagnostics.json";
-import allocationsData from "@/data/factor_allocations.json";
-import decisionsData from "@/data/allocation_decisions.json";
-import portfolioTargetsData from "@/data/portfolio_targets.json";
-import rebalanceTradesData from "@/data/rebalance_trades.json";
-import signalEventsData from "@/data/stock_signal_events.json";
-import stockPricesData from "@/data/stock_prices.json";
-import backtestPortfolioData from "@/data/backtest_portfolio.json";
-import backtestSummaryData from "@/data/backtest_summary.json";
-import marketIndexData from "@/data/market_index.json";
-import macroData from "@/data/macro_monthly.json";
-import newsFeaturesData from "@/data/news_features.json";
-import newsDailyData from "@/data/news_features_daily.json";
-import newsArticlesData from "@/data/news_articles_raw.json";
-import sectorIndexData from "@/data/sector_index.json";
-import stocksData from "@/data/stocks.json";
-import dataInventoryData from "@/data/data_inventory.json";
-import langGraphRunReportData from "@/data/langgraph_run_report.json";
-import eodRefreshStatusData from "@/data/eod_refresh_status.json";
-
 import type {
   RegimePrediction,
   FactorBasketEntry,
@@ -52,28 +29,134 @@ import type {
   EodRefreshStatus,
 } from "@/types";
 
-const regimes = regimesData as RegimePrediction[];
-const baskets = basketsData as FactorBasketEntry[];
-const factorReturns = factorReturnsData as FactorReturn[];
-const factorDiagnostics = factorDiagnosticsData as FactorDiagnostics[];
-const allocations = allocationsData as FactorAllocation[];
-const decisions = decisionsData as AllocationDecision[];
-const portfolioTargets = portfolioTargetsData as PortfolioTarget[];
-const rebalanceTrades = rebalanceTradesData as RebalanceTrade[];
-const signalEvents = signalEventsData as StockSignalEvent[];
-const stockPrices = stockPricesData as StockPricePoint[];
-const backtestPortfolio = backtestPortfolioData as BacktestPortfolioPoint[];
-const backtestSummary = backtestSummaryData as BacktestSummary[];
-const marketIndex = marketIndexData as MarketIndexPoint[];
-const macro = macroData as MacroPoint[];
-const newsFeatures = newsFeaturesData as NewsFeature[];
-const newsDailyFeatures = newsDailyData as NewsDailyFeature[];
-const newsArticles = newsArticlesData as NewsArticle[];
-const sectorIndex = sectorIndexData as any[];
-const stocks = stocksData as StockMeta[];
-const dataInventory = dataInventoryData as DataInventory[];
-const langGraphRunReport = langGraphRunReportData as LangGraphRunReport;
-const eodRefreshStatus = eodRefreshStatusData as EodRefreshStatus;
+let regimes: RegimePrediction[] = [];
+let baskets: FactorBasketEntry[] = [];
+let factorReturns: FactorReturn[] = [];
+let factorDiagnostics: FactorDiagnostics[] = [];
+let allocations: FactorAllocation[] = [];
+let decisions: AllocationDecision[] = [];
+let portfolioTargets: PortfolioTarget[] = [];
+let rebalanceTrades: RebalanceTrade[] = [];
+let signalEvents: StockSignalEvent[] = [];
+let stockPrices: StockPricePoint[] = [];
+let backtestPortfolio: BacktestPortfolioPoint[] = [];
+let backtestSummary: BacktestSummary[] = [];
+let marketIndex: MarketIndexPoint[] = [];
+let macro: MacroPoint[] = [];
+let newsFeatures: NewsFeature[] = [];
+let newsDailyFeatures: NewsDailyFeature[] = [];
+let newsArticles: NewsArticle[] = [];
+let sectorIndex: any[] = [];
+let stocks: StockMeta[] = [];
+let dataInventory: DataInventory[] = [];
+let langGraphRunReport: LangGraphRunReport = {
+  orchestration: "",
+  nodes: [],
+  conditional_routes: [],
+  human_approval_required: false,
+  warnings: [],
+  llm_explanation: "",
+};
+let eodRefreshStatus: EodRefreshStatus = {
+  run_id: null,
+  requested_date: null,
+  resolved_date: null,
+  status: "not_loaded",
+  stock_rows: 0,
+  index_rows: 0,
+  message: "Dashboard data has not loaded yet.",
+  started_at: null,
+  finished_at: null,
+};
+let dashboardDataLoaded = false;
+
+const DATA_BASE = "/data";
+
+async function fetchDataFile<T>(name: string): Promise<T> {
+  const res = await fetch(`${DATA_BASE}/${name}.json`, { cache: "no-cache" });
+  if (!res.ok) {
+    throw new Error(`Failed to load ${name}.json (${res.status})`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function loadDashboardData(): Promise<void> {
+  const [
+    regimesJson,
+    basketsJson,
+    factorReturnsJson,
+    factorDiagnosticsJson,
+    allocationsJson,
+    decisionsJson,
+    portfolioTargetsJson,
+    rebalanceTradesJson,
+    signalEventsJson,
+    stockPricesJson,
+    backtestPortfolioJson,
+    backtestSummaryJson,
+    marketIndexJson,
+    macroJson,
+    newsFeaturesJson,
+    newsDailyJson,
+    newsArticlesJson,
+    sectorIndexJson,
+    stocksJson,
+    dataInventoryJson,
+    langGraphJson,
+    eodStatusJson,
+  ] = await Promise.all([
+    fetchDataFile<RegimePrediction[]>("regime_predictions"),
+    fetchDataFile<FactorBasketEntry[]>("factor_baskets"),
+    fetchDataFile<FactorReturn[]>("factor_returns"),
+    fetchDataFile<FactorDiagnostics[]>("factor_diagnostics"),
+    fetchDataFile<FactorAllocation[]>("factor_allocations"),
+    fetchDataFile<AllocationDecision[]>("allocation_decisions"),
+    fetchDataFile<PortfolioTarget[]>("portfolio_targets"),
+    fetchDataFile<RebalanceTrade[]>("rebalance_trades"),
+    fetchDataFile<StockSignalEvent[]>("stock_signal_events"),
+    fetchDataFile<StockPricePoint[]>("stock_prices"),
+    fetchDataFile<BacktestPortfolioPoint[]>("backtest_portfolio"),
+    fetchDataFile<BacktestSummary[]>("backtest_summary"),
+    fetchDataFile<MarketIndexPoint[]>("market_index"),
+    fetchDataFile<MacroPoint[]>("macro_monthly"),
+    fetchDataFile<NewsFeature[]>("news_features"),
+    fetchDataFile<NewsDailyFeature[]>("news_features_daily"),
+    fetchDataFile<NewsArticle[]>("news_articles_raw"),
+    fetchDataFile<any[]>("sector_index"),
+    fetchDataFile<StockMeta[]>("stocks"),
+    fetchDataFile<DataInventory[]>("data_inventory"),
+    fetchDataFile<LangGraphRunReport>("langgraph_run_report"),
+    fetchDataFile<EodRefreshStatus>("eod_refresh_status"),
+  ]);
+
+  regimes = regimesJson;
+  baskets = basketsJson;
+  factorReturns = factorReturnsJson;
+  factorDiagnostics = factorDiagnosticsJson;
+  allocations = allocationsJson;
+  decisions = decisionsJson;
+  portfolioTargets = portfolioTargetsJson;
+  rebalanceTrades = rebalanceTradesJson;
+  signalEvents = signalEventsJson;
+  stockPrices = stockPricesJson;
+  backtestPortfolio = backtestPortfolioJson;
+  backtestSummary = backtestSummaryJson;
+  marketIndex = marketIndexJson;
+  macro = macroJson;
+  newsFeatures = newsFeaturesJson;
+  newsDailyFeatures = newsDailyJson;
+  newsArticles = newsArticlesJson;
+  sectorIndex = sectorIndexJson;
+  stocks = stocksJson;
+  dataInventory = dataInventoryJson;
+  langGraphRunReport = langGraphJson;
+  eodRefreshStatus = eodStatusJson;
+  dashboardDataLoaded = true;
+}
+
+export function isDashboardDataLoaded(): boolean {
+  return dashboardDataLoaded;
+}
 
 export function getRegimePredictions(): RegimePrediction[] {
   return regimes;

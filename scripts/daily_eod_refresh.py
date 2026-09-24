@@ -12,7 +12,7 @@ What it updates:
   - market_index_monthly for fetched index rows
   - factor_scores_monthly for the affected month
   - regime_features_monthly for the affected month
-  - src/data/eod_refresh_status.json
+  - public/data/eod_refresh_status.json
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ import math
 import sqlite3
 import sys
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -38,7 +39,7 @@ import pandas as pd
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 DB_PATH = PROJECT_DIR / "data_input" / "processed_financial_data.sqlite"
-JSON_DIR = PROJECT_DIR / "src" / "data"
+JSON_DIR = PROJECT_DIR / "public" / "data"
 RAW_DATA_DIR = PROJECT_DIR.parent.parent / "data"
 RAW_EOD_DIR = RAW_DATA_DIR / "Daily EOD Refresh"
 STATUS_PATH = JSON_DIR / "eod_refresh_status.json"
@@ -50,6 +51,10 @@ EXCLUDED = {"ENRIN", "GROWW", "HDFCLIFE", "ICICIAMC", "ICICIGI", "LENSKART", "LG
 INDEX_API_URL = "https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString"
 INDEX_PAGE_URL = "https://www.niftyindices.com/reports/historical-data"
 INDEX_NAMES = ["NIFTY 200", "INDIA VIX"]
+YAHOO_INDEX_SYMBOLS = {
+    "NIFTY 200": "^CNX200",
+    "INDIA VIX": "^INDIAVIX",
+}
 
 
 def month_end(date_value: dt.date) -> str:
@@ -351,7 +356,64 @@ def fetch_nifty_index(index_name: str, date_value: dt.date) -> dict | None:
             }
         except Exception:
             time.sleep(0.2)
+    return fetch_yahoo_index(index_name, date_value)
+
+
+def fetch_yahoo_index(index_name: str, date_value: dt.date) -> dict | None:
+    """Fallback real index source when the Nifty Indices endpoint is unavailable."""
+    symbol = YAHOO_INDEX_SYMBOLS.get(index_name)
+    if not symbol:
+        return None
+
+    start_dt = dt.datetime.combine(date_value - dt.timedelta(days=2), dt.time.min, tzinfo=dt.timezone.utc)
+    end_dt = dt.datetime.combine(date_value + dt.timedelta(days=1), dt.time.min, tzinfo=dt.timezone.utc)
+    url = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/"
+        f"{urllib.parse.quote(symbol, safe='')}?period1={int(start_dt.timestamp())}"
+        f"&period2={int(end_dt.timestamp())}&interval=1d"
+    )
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "https://finance.yahoo.com/",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            obj = json.loads(response.read().decode("utf-8", errors="replace"))
+        result = (obj.get("chart", {}).get("result") or [None])[0]
+        if not result:
+            return None
+        timestamps = result.get("timestamp") or []
+        quote = (result.get("indicators", {}).get("quote") or [{}])[0]
+        for idx, timestamp in enumerate(timestamps):
+            row_date = dt.datetime.fromtimestamp(timestamp, tz=dt.timezone.utc).date()
+            if row_date != date_value:
+                continue
+            close = list_value(quote.get("close"), idx)
+            if close is None:
+                continue
+            return {
+                "date": date_value.isoformat(),
+                "index_name": index_name,
+                "open": list_value(quote.get("open"), idx),
+                "high": list_value(quote.get("high"), idx),
+                "low": list_value(quote.get("low"), idx),
+                "close": close,
+                "source": url,
+                "fetched_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            }
+    except Exception:
+        return None
     return None
+
+
+def list_value(values, idx: int):
+    if not isinstance(values, list) or idx >= len(values):
+        return None
+    return to_float(values[idx])
 
 
 def to_float(value):

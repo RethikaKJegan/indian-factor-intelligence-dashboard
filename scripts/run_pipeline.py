@@ -2,7 +2,7 @@
 """
 Indian Regime/Factor/Portfolio Intelligence Pipeline
 Reads: processed_financial_data.sqlite
-Writes: src/data/*.json + financial_intelligence_outputs.sqlite + CSVs
+Writes: public/data/*.json + financial_intelligence_outputs.sqlite + CSVs
 
 Nodes:
   DataValidationAgent -> RegimeDetectionAgent -> FactorScoringAgent ->
@@ -20,7 +20,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
 INPUT_DB = PROJECT_DIR / "data_input" / "processed_financial_data.sqlite"
 OUTPUT_DB = PROJECT_DIR / "financial_intelligence_outputs.sqlite"
-JSON_DIR = PROJECT_DIR / "src" / "data"
+JSON_DIR = PROJECT_DIR / "public" / "data"
 CSV_DIR = PROJECT_DIR / "output_csv"
 RAW_DATA_DIR = PROJECT_DIR.parent.parent / "data"
 RSS_SOURCE_FILE = RAW_DATA_DIR / "News Data" / "rss_sources.txt.txt"

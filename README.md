@@ -43,7 +43,7 @@ The project is built around the Nifty 200 universe and uses Indian market/factor
 Committed:
 
 - React dashboard source in `src/`
-- Generated demo JSON data in `src/data/`
+- Generated demo JSON data in `public/data/`
 - Python pipeline scripts in `scripts/`
 - Package files and frontend config
 - `.env.example`
@@ -110,7 +110,7 @@ That wrapper:
 3. Updates daily stock tables in SQLite.
 4. Refreshes the affected monthly stock/factor/regime rows.
 5. Runs the LangGraph pipeline.
-6. Updates `src/data/*.json`.
+6. Updates `public/data/*.json`.
 7. Starts Vite on port `5174`.
 
 Refresh only:
@@ -135,7 +135,7 @@ data_input/processed_financial_data.sqlite
 
 This database is intentionally not committed because it is large and local.
 
-The committed dashboard JSON files under `src/data/` let the UI run as a demo snapshot. To regenerate all JSON from your own database, place the SQLite file in `data_input/` and run:
+The committed dashboard JSON files under `public/data/` let the UI run as a demo snapshot. To regenerate all JSON from your own database, place the SQLite file in `data_input/` and run:
 
 ```powershell
 npm run eod
@@ -153,7 +153,7 @@ python scripts/run_langgraph_pipeline.py
 scripts/daily_eod_refresh.py
 ```
 
-Downloads latest real NSE EOD data, updates daily/monthly data tables, and writes `src/data/eod_refresh_status.json`.
+Downloads latest real NSE EOD data, updates daily/monthly data tables, and writes `public/data/eod_refresh_status.json`.
 
 ```text
 scripts/run_langgraph_pipeline.py
