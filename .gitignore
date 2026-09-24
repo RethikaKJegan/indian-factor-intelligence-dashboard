@@ -1,0 +1,44 @@
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+.env
+.env.*
+!.env.example
+
+# Local generated data / large artifacts
+data_input/*.sqlite
+data_input/*.db
+data_input/*.sqlite3
+output_csv/
+financial_intelligence_outputs.sqlite
+*.sqlite
+*.db
+
+# Local runtime reports
+daily_update.log
+model_run_report.md
+langgraph_run_report.md
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
