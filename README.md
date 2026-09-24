@@ -125,6 +125,46 @@ Website only:
 npm run dev:5174
 ```
 
+## Automated Vercel Data Refresh
+
+The deployed Vercel dashboard is a static frontend that reads generated JSON from:
+
+```text
+public/data/*.json
+```
+
+For automatic EOD updates, the repository includes:
+
+```text
+.github/workflows/daily-eod-refresh.yml
+```
+
+This GitHub Actions workflow runs Monday-Friday at `18:30 IST`:
+
+```text
+daily_eod_refresh.py
+        ↓
+run_langgraph_pipeline.py
+        ↓
+commit updated public/data/*.json and SQLite snapshot
+        ↓
+push to GitHub
+        ↓
+Vercel auto-redeploys
+```
+
+You can also run it manually from GitHub:
+
+```text
+Actions → Daily EOD Refresh → Run workflow
+```
+
+If you want optional Groq explanations in the scheduled workflow, add this repository secret:
+
+```text
+GROQ_API_KEY
+```
+
 ## SQLite Data
 
 The main local database is expected at:

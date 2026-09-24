@@ -1,0 +1,51 @@
+name: Daily EOD Refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 18:30 IST, Monday-Friday. GitHub cron uses UTC.
+    - cron: "0 13 * * 1-5"
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run EOD refresh
+        run: python scripts/daily_eod_refresh.py --allow-no-data
+
+      - name: Run LangGraph pipeline
+        run: python scripts/run_langgraph_pipeline.py
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+
+      - name: Show refresh status
+        run: cat public/data/eod_refresh_status.json
+
+      - name: Commit updated data snapshot
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/data data_input/processed_financial_data.sqlite
+          if git diff --cached --quiet; then
+            echo "No EOD data changes to commit."
+          else
+            git commit -m "Update daily EOD data snapshot"
+            git push
+          fi
