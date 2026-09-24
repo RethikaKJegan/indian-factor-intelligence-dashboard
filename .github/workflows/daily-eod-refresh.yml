@@ -3,6 +3,8 @@ run-name: Daily EOD Refresh - ${{ github.event_name }}
 
 on:
   workflow_dispatch:
+  repository_dispatch:
+    types: [daily-eod-refresh]
   schedule:
     # GitHub cron uses UTC. Run repeatedly during the India EOD window
     # because scheduled workflows can be delayed or occasionally dropped.
@@ -29,6 +31,7 @@ jobs:
       - name: Show trigger context
         run: |
           echo "event_name=${{ github.event_name }}"
+          echo "repository_dispatch_action=${{ github.event.action }}"
           echo "ref=${{ github.ref }}"
           echo "sha=${{ github.sha }}"
           date -u

@@ -171,6 +171,12 @@ If you want optional Groq explanations in the scheduled workflow, add this repos
 GROQ_API_KEY
 ```
 
+For stricter timing than GitHub's best-effort scheduler, use the external cron setup:
+
+```text
+EXTERNAL_CRON_SETUP.md
+```
+
 ## SQLite Data
 
 The main local database is expected at:
