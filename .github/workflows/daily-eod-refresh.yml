@@ -3,8 +3,11 @@ name: Daily EOD Refresh
 on:
   workflow_dispatch:
   schedule:
-    # 18:30 IST, Monday-Friday. GitHub cron uses UTC.
-    - cron: "0 13 * * 1-5"
+    # GitHub cron uses UTC. These backup slots avoid busy exact-hour scheduling.
+    # 18:17, 18:47, and 19:17 IST, Monday-Friday.
+    - cron: "47 12 * * 1-5"
+    - cron: "17 13 * * 1-5"
+    - cron: "47 13 * * 1-5"
 
 permissions:
   contents: write

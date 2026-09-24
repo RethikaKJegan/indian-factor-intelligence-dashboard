@@ -139,7 +139,15 @@ For automatic EOD updates, the repository includes:
 .github/workflows/daily-eod-refresh.yml
 ```
 
-This GitHub Actions workflow runs Monday-Friday at `18:30 IST`:
+This GitHub Actions workflow runs Monday-Friday during the EOD window at:
+
+```text
+18:17 IST
+18:47 IST
+19:17 IST
+```
+
+Multiple backup slots are used because GitHub scheduled workflows can be delayed or skipped when many repositories run at the exact same UTC minute.
 
 ```text
 daily_eod_refresh.py
