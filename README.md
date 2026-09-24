@@ -53,7 +53,7 @@ Not committed:
 - `.env`
 - `node_modules/`
 - `dist/`
-- local SQLite databases in `data_input/`
+- extra local SQLite databases in `data_input/`
 - `output_csv/`
 - local runtime logs/reports
 
@@ -133,7 +133,7 @@ The main local database is expected at:
 data_input/processed_financial_data.sqlite
 ```
 
-This database is intentionally not committed because it is large and local.
+The baseline `data_input/processed_financial_data.sqlite` is committed so teammates can rerun the pipeline after cloning. Extra local database copies remain ignored.
 
 The committed dashboard JSON files under `public/data/` let the UI run as a demo snapshot. To regenerate all JSON from your own database, place the SQLite file in `data_input/` and run:
 

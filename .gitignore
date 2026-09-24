@@ -22,6 +22,7 @@ output_csv/
 financial_intelligence_outputs.sqlite
 *.sqlite
 *.db
+!data_input/processed_financial_data.sqlite
 
 # Local runtime reports
 daily_update.log
