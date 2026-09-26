@@ -5,7 +5,6 @@ GitHub scheduled workflows are best-effort and can be delayed or dropped during 
 The workflow supports three trigger methods:
 
 - Manual GitHub button: `workflow_dispatch`
-- GitHub cron backup: `schedule`
 - External scheduler webhook: `repository_dispatch`
 
 ## 1. Create A GitHub Token
@@ -118,4 +117,4 @@ If the cron job returns HTTP `204`, that is good. GitHub returns `204 No Content
 
 ## 5. Backup
 
-The workflow still keeps GitHub's native scheduled cron as backup. If cron-job.org works reliably, it becomes the main scheduler, and GitHub cron is only a fallback.
+The GitHub manual **Run workflow** button remains available as a backup. GitHub's native scheduled cron is intentionally not used because it can run late and create duplicate delayed runs.

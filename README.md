@@ -139,13 +139,13 @@ For automatic EOD updates, the repository includes:
 .github/workflows/daily-eod-refresh.yml
 ```
 
-This GitHub Actions workflow runs Monday-Friday every 10 minutes during the India EOD window:
+Daily automation is handled by cron-job.org, which triggers the GitHub Actions workflow through `repository_dispatch` at:
 
 ```text
-18:00 IST to 20:00 IST
+Monday-Friday, 18:30 IST
 ```
 
-Multiple backup slots are used because GitHub scheduled workflows can be delayed or occasionally skipped. The script commits only when data changes, so repeated scheduled checks should not create unnecessary commits.
+GitHub's native scheduled cron was removed because it can run late and create duplicate delayed EOD runs. The workflow now runs from cron-job.org or from the manual GitHub **Run workflow** button.
 
 ```text
 daily_eod_refresh.py
@@ -165,13 +165,13 @@ You can also run it manually from GitHub:
 Actions → Daily EOD Refresh → Run workflow
 ```
 
-If you want optional Groq explanations in the scheduled workflow, add this repository secret:
+If you want optional Groq explanations in the automated workflow, add this repository secret:
 
 ```text
 GROQ_API_KEY
 ```
 
-For stricter timing than GitHub's best-effort scheduler, use the external cron setup:
+External cron setup details:
 
 ```text
 EXTERNAL_CRON_SETUP.md
