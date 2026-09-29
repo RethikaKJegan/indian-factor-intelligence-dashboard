@@ -1,5 +1,29 @@
-numpy
-pandas
-scikit-learn
-feedparser
-langgraph
+# Python dependencies for the daily pipeline.
+#
+# Lower bounds, not exact pins. The versions below are what the pipeline was
+# last verified against; the floor is the oldest release that still provides
+# every API this code calls, so a scheduled run cannot silently pick up a
+# release where something has been renamed or removed.
+#
+# Exact pins would make the nightly job reproducible in the strict sense, but
+# they would also freeze the runner on old versions and need manual maintenance
+# to advance. Floors plus a loud failure is the better trade for a job nobody is
+# watching: a breaking change surfaces as a red run and a non-zero exit, never
+# as a quietly different number.
+#
+# Verified against: numpy 2.2.6, pandas 2.3.0, scipy 1.15.3,
+#                    scikit-learn 1.6.1, feedparser 6.0.14, langgraph 1.2.12
+numpy>=1.26
+pandas>=2.0
+
+# scipy is imported directly by scripts/regime_model.py (scipy.optimize, for the
+# Hungarian component alignment that keeps cluster labels stable across walk-
+# forward refits). It was absent from this list and only resolved because
+# scikit-learn happens to require it. A module that imports a package should
+# declare it rather than relying on someone else's dependency list to keep
+# working.
+scipy>=1.11
+
+scikit-learn>=1.4
+feedparser>=6.0
+langgraph>=0.2
