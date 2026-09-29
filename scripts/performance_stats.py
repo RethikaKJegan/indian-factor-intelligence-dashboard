@@ -587,11 +587,26 @@ def full_report(
             "sortino_vs_zero": round(sortino_at(rets, 0.0), 4),
             "sharpe_basis": (
                 "measured Indian 10-year G-Sec, applied month by month"
+
                 if measured
                 else f"constant assumed rate of {rf_annual * 100:.2f}%"
             ),
         },
     }
+
+    # Selection-bias adjustment. This Sharpe is the best of an enumerated set of
+    # configurations, not one fixed in advance, so it has to be read against
+    # what the best of that many random strategies would produce. It is
+    # reported alongside the headline rather than replacing it: a reader is
+    # entitled to the unadjusted figure as well as the adjusted one.
+    try:
+        import selection_bias
+        _dsr = selection_bias.deflated_sharpe(rets, rf_monthly if measured else None)
+        if _dsr:
+            report["selection_bias"] = _dsr
+    except Exception as _exc:  # an adjustment must never break the report
+        report["selection_bias"] = {"error": str(_exc)}
+
 
     if len(bench) >= 3:
         # Jensen's alpha is a regression on returns net of the risk-free rate,

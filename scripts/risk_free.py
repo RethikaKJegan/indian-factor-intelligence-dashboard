@@ -26,6 +26,34 @@ import sqlite3
 #: not silently produce a very different number, and reported as such.
 FALLBACK_ANNUAL = 0.0724
 
+#: Modified duration used to convert a yield change into a return.
+#:
+#: A 10-year government security has a modified duration around 7. This is a
+#: stated assumption, not a measurement: the database carries a yield but no
+#: bond index, so the price effect of a rate move has to be modelled rather
+#: than read. It is disclosed because it is the one remaining estimated
+#: quantity in the risk-adjusted numbers.
+BOND_DURATION = 7.0
+
+
+def realised_bond_return(prev_yield: float, curr_yield: float) -> float:
+    """Approximate the one-month total return on a 10-year G-Sec.
+
+    The carry is the yield earned over the month at the *previous* month's
+    rate, because that is what a holder actually collects. The price effect is
+    minus duration times the change in yield.
+
+    Using the contemporaneous yield directly, as a naive Sharpe does, gets the
+    second term wrong in exactly the months that matter. When yields fall
+    during a risk-off period a bondholder earned *more* than the quoted rate,
+    so excess return over that rate is understated. The correction therefore
+    lowers the measured Sharpe in rallies, which is the direction that makes
+    the result harder to sell rather than easier.
+    """
+    carry = prev_yield / 12.0
+    price = -BOND_DURATION * (curr_yield - prev_yield)
+    return carry + price
+
 
 def load_series(db_path: str) -> dict:
     """Load the monthly Indian 10-year G-Sec yield.
@@ -88,14 +116,6 @@ def load_series(db_path: str) -> dict:
 
 
 def resolve(loaded: dict, months: list[str]) -> dict:
-    """Align the rate series to the months a return path actually covers.
-
-    A month with no observation takes the most recent earlier one, which is the
-    right default for a yield: it moves slowly, and using the next observation
-    would leak future information into a backtest. The number of months that
-    needed filling is reported, because a series that is mostly interpolated is
-    not the same evidence as one that is observed throughout.
-    """
     series = loaded.get("series") or {}
     months = sorted(m for m in months if m)
     if not months:

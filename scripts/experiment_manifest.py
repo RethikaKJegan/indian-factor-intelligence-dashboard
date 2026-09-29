@@ -522,6 +522,52 @@ def collect_caveats(json_dir: str) -> list[dict]:
                 ),
             })
         r2 = vb.get("r_squared")
+        sb = report.get("selection_bias") or {}
+        if sb.get("observed_sharpe") is not None:
+            survives = sb.get("survives_selection_at_95pct")
+            pfp = sb.get("probability_of_false_positive")
+            if survives:
+                entries.append({
+                    "id": "selection_bias",
+                    "severity": "low",
+                    "statement": (
+                        f"The reported Sharpe of {sb['observed_sharpe']} is the "
+                        f"best of {sb.get('trials_effective')} effectively "
+                        f"independent configurations, not one fixed in advance. "
+                        f"Compared against what the best of that many random "
+                        f"strategies would produce, it clears the bar with a "
+                        f"false-positive probability of about {pfp:.1%}, so the "
+                        f"selection does not explain it away."
+                    ),
+                    "why_not_fixed": (
+                        "Nothing to fix. The adjustment is reported so the "
+                        "reader can weigh it."
+                    ),
+                })
+            else:
+                entries.append({
+                    "id": "sharpe_does_not_clear_the_selection_bar",
+                    "severity": "high",
+                    "statement": (
+                        f"The reported Sharpe of {sb['observed_sharpe']} is the "
+                        f"best of {sb.get('trials_effective')} effectively "
+                        f"independent configurations, not one chosen in advance. "
+                        f"Against the {sb.get('expected_max_sharpe_under_null')} "
+                        f"that the best of that many random strategies would be "
+                        f"expected to reach, a strategy this strong appears by "
+                        f"chance roughly {pfp:.0%} of the time. The deflated "
+                        f"figure is {sb.get('deflated_sharpe')}. A simulation-"
+                        f"calibrated bar, which is less strict, would give "
+                        f"{sb.get('deflated_sharpe_simulated')}."
+                    ),
+                    "why_not_fixed": (
+                        "This is not a defect in the calculation; it is what the "
+                        "sample supports. Closing the gap needs either more "
+                        "out-of-sample history, a strategy fixed in advance "
+                        "rather than selected, or a fresh sample the search "
+                        "never touched."
+                    ),
+                })
         if r2 is not None and r2 > 0.5:
             entries.append({
                 "id": "diversification_is_illusory",
@@ -594,39 +640,53 @@ def collect_caveats(json_dir: str) -> list[dict]:
 
     news = load("news_features")
     if news:
-        months_with_articles = sum(
-            1 for n in news if (n.get("article_count") or 0) > 0
-        )
         total_articles = sum(n.get("article_count") or 0 for n in news)
-        # The denominator is every month the backtest covers, not every month
-        # that happens to have a news row. A feature present in 7 rows out of
-        # 153 is a 4.6% coverage rate, and reporting it as 7 of 7 would dress a
-        # gap as a complete series.
-        total_months = 0
         regimes_all = load("regime_predictions")
-        if regimes_all:
-            total_months = len(regimes_all)
-        coverage_pct = (
-            100.0 * months_with_articles / total_months if total_months else None
-        )
-        if total_months and months_with_articles < total_months:
+        total_months = len(regimes_all) if regimes_all else 0
+        months_with = sum(1 for n in news if (n.get("article_count") or 0) > 0)
+        in_window = sum(1 for n in news if str(n.get("month", "")) >= "2014-01")
+        # Mean confidence over the months that actually carry articles, rather
+        # than a hard-coded range. A number written into the sentence by hand
+        # goes stale the moment the coverage changes, and this sentence has
+        # already said "95%" about a series that is 42% covered.
+        confs = [
+            float(n.get("news_confidence") or 0.0)
+            for n in news
+            if (n.get("article_count") or 0) > 0
+        ]
+        mean_conf = (sum(confs) / len(confs)) if confs else 0.0
+        coverage_pct = 100.0 * months_with / total_months if total_months else 0.0
+        if total_months and months_with < total_months:
+            if coverage_pct < 50:
+                judgement = (
+                    "A feature absent in more than half the months is not "
+                    "measuring sentiment; it is partly measuring article "
+                    "availability."
+                )
+            else:
+                judgement = (
+                    "Coverage is now a majority of the window, but the thin "
+                    "months carry a confidence weight of about "
+                    f"{mean_conf:.2f}, so a month with one article barely moves "
+                    "the model and a month with several hundred moves it a lot. "
+                    "The average is therefore a blend of a few well-observed "
+                    "months and many near-empty ones."
+                )
             caveats.append({
                 "id": "news_coverage_is_sparse",
-                "severity": "medium",
+                "severity": "medium" if coverage_pct < 50 else "low",
                 "statement": (
-                    f"News features carry articles in only {months_with_articles} "
-                    f"of {total_months} months "
-                    f"({coverage_pct:.0f}% coverage, {total_articles} articles "
-                    "in total), and the pipeline's own confidence weight for "
-                    "them is 0.05–0.10. A feature that is absent in 95% of "
-                    "months is not measuring news sentiment; it is measuring "
-                    "article availability."
+                    f"News features are populated for {months_with} of "
+                    f"{total_months} months ({coverage_pct:.0f}% coverage, "
+                    f"{in_window} inside the backtest window, {total_articles} "
+                    f"articles in total), at a mean confidence of about "
+                    f"{mean_conf:.2f}. {judgement}"
                 ),
                 "why_not_fixed": (
-                    "The RSS archive covers a short window. This is why the news "
-                    "factor is excluded from the allocation and retained only as "
-                    "decision context, rather than removed outright, which would "
-                    "have discarded the audit trail."
+                    "The archive only goes back so far. This is why the news "
+                    "factor is weighted by its own confidence rather than "
+                    "treated as a full-strength input, and why it is retained as "
+                    "decision context rather than removed outright."
                 ),
             })
 

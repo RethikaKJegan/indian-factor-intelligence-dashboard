@@ -24,6 +24,8 @@ from stock_backtest import CostModel, stock_level_returns, summarize
 import performance_stats
 import risk_free
 import coverage_audit
+import news_history
+import selection_bias
 import experiment_manifest
 import data_freshness
 
@@ -1751,6 +1753,25 @@ def backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_
             rf_loaded = risk_free.load_series(str(INPUT_DB))
             rf_aligned = risk_free.resolve(rf_loaded, [r["month"] for r in stock_rows])
             rf_meta = risk_free.describe(rf_loaded, rf_aligned)
+
+            # The yield is a rate, not a return. Converting it to the return
+            # a bondholder actually earned adds the price effect of a rate
+            # move, which matters most in exactly the months that move a
+            # Sharpe: a risk-off rally lowers yields, so a holder earned more
+            # than the quoted rate, and measuring against the rate alone
+            # overstates the excess return precisely then.
+            _months_rf = [r["month"] for r in stock_rows]
+            _rates = rf_aligned["rates"]
+            _prev = None
+            rf_realised: dict[str, float] = {}
+            for _m in _months_rf:
+                _y = _rates.get(_m)
+                if _y is None or _prev is None:
+                    continue
+                rf_realised[_m] = risk_free.realised_bond_return(_prev, _y)
+                _prev = _y
+            if _prev is None and _rates:
+                _prev = _rates.get(_months_rf[0]) if _months_rf else None
             report = performance_stats.full_report(
                 stock_rows, bench_prices,
                 rf_rates=rf_aligned["rates"], rf_meta=rf_meta,
@@ -1920,7 +1941,8 @@ def backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_
     return bt_portfolio, summaries
 
 # ─── ChartSignalAgent ───
-def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset()):
+def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset(),
+                       news_features=None):
     print("[ChartSignalAgent] Starting...")
     cursor = conn.cursor()
 
@@ -2015,24 +2037,6 @@ def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset()):
     except:
         write_json("macro_monthly", [])
 
-    # News features
-    try:
-        cursor.execute("SELECT * FROM news_features_monthly ORDER BY month")
-        cols = [d[0] for d in cursor.description]
-        news = []
-        for r in cursor.fetchall():
-            d = dict(zip(cols, r))
-            news.append({
-                "month": d.get("month","")[:7] if d.get("month") else "",
-                "sentiment_score": safe_float(d.get("sentiment_score")),
-                "negative_ratio": safe_float(d.get("negative_ratio")),
-                "article_count": safe_float(d.get("article_count")),
-                "risk_event_count": safe_float(d.get("risk_event_count"))
-            })
-        write_json("news_features", news)
-    except:
-        write_json("news_features", [])
-
     # Sector index
     try:
         cursor.execute("SELECT * FROM sector_index_monthly ORDER BY month")
@@ -2049,6 +2053,45 @@ def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset()):
         write_json("sector_index", sector)
     except:
         write_json("sector_index", [])
+
+    # News features: merge the stored history with the live figures.
+    #
+    # This used to re-read `news_features_monthly` and write the result over
+    # `news_features.json`, which the news agent had just written correctly.
+    # Two faults: the columns were named `sentiment_score` when the table calls
+    # them `monthly_news_sentiment`, so every field came back None and 61 rows
+    # of nulls overwrote good data; and it replaced live values for months both
+    # sources cover, when the live figure is the one the model was given.
+    try:
+        cursor.execute(
+            "SELECT month, monthly_news_sentiment, monthly_negative_news_ratio, "
+            "       news_article_count, monthly_risk_event_count, news_confidence "
+            "FROM news_features_monthly ORDER BY month"
+        )
+        stored = {}
+        for _m, _s, _n, _c, _r, _cf in cursor.fetchall():
+            stored[str(_m)[:7]] = {
+                "month": str(_m)[:7],
+                "sentiment_score": safe_float(_s),
+                "negative_ratio": safe_float(_n),
+                "article_count": safe_float(_c),
+                "risk_event_count": safe_float(_r),
+                "news_confidence": safe_float(_cf),
+            }
+        live = {str(r.get("month", ""))[:7]: r for r in (news_features or [])}
+        news = []
+        for _month in sorted(set(stored) | set(live)):
+            _row = dict(stored.get(_month) or live.get(_month) or {"month": _month})
+            _row["month"] = _month
+            if _month in live:
+                _row.update({k: v for k, v in live[_month].items() if v is not None})
+            news.append(_row)
+        write_json("news_features", news)
+        _shared = len(set(stored) & set(live))
+        print(f"  News features: {len(news)} months ({len(live)} live, "
+              f"{len(stored) - _shared} historical, {_shared} shared)")
+    except sqlite3.Error as exc:
+        print(f"  WARNING: could not merge historical news features: {exc}")
 
     print(f"[ChartSignalAgent] Done. {len(signal_events)} signals, {len(prices)} price points.")
     return signal_events
@@ -2164,6 +2207,20 @@ def main():
     # Node 0: RSSNewsAgent
     news_articles, news_features = rss_news_agent()
 
+    # The live feed covers about a week. `news_features_monthly` already holds
+    # 56 months inside the backtest window, collected upstream and then never
+    # read, because the pipeline built its news view from the fetch alone.
+    # Merging them takes news coverage from a handful of months to most of the
+    # window. Live wins for shared months; every row keeps its own confidence
+    # weight, so a month backed by one article stays discounted against one
+    # backed by several hundred.
+    _hist = news_history.load_historical(str(INPUT_DB))
+    news_features, _merge = news_history.merge(news_features, _hist)
+    print(
+        f"  News: {_merge['total_months']} months "
+        f"({_merge['live_months']} live, {_merge['historical_months']} from database)"
+    )
+
     # Node 1: DataValidationAgent
     validation_report, symbols, excluded = data_validation_agent(conn)
 
@@ -2189,7 +2246,7 @@ def main():
     bt_portfolio, bt_summary = backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_targets=portfolio_targets)
 
     # Node 9: ChartSignalAgent
-    signal_events = chart_signal_agent(conn, rebalance_trades, baskets, excluded)
+    signal_events = chart_signal_agent(conn, rebalance_trades, baskets, excluded, news_features)
 
     # Node 10 was a second RSSNewsAgent call. Removed: it re-fetched the live
     # feeds, produced a different article set from the one the regime model had

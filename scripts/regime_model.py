@@ -58,11 +58,26 @@ def spherical_param_count(k: int, d: int) -> int:
     return k * (d + 1) + (k - 1)
 
 
+#: A feature must be present in at least this share of months to be used.
+#:
+#: The previous test was "does it have any non-null values at all", which let
+#: `fii_dii_trend` through on the strength of a single populated month out of
+#: 153. Forward-filling then smeared that one value across the whole sample,
+#: producing a column that was constant and had to be discarded again a few
+#: lines later. A feature observed in one month has not been observed; it is a
+#: data-entry artefact, and filling it invents 152 observations that never
+#: happened.
+MIN_FEATURE_COVERAGE = 0.10
+
+
 def select_feature_columns(columns, rows):
     """Pick usable numeric market features, dropping artifacts and constants.
 
-    A feature is kept only if it varies over the sample. `fii_dii_trend`, for
-    example, is 0 in every month and carries no information.
+    Three tests, in increasing strictness: the feature must not be a known
+    data artifact, must vary over the sample, and must be observed in at least
+    `MIN_FEATURE_COVERAGE` of months. The coverage test is what stops a
+    single stray observation from being forward-filled into a synthetic
+    constant.
     """
     available = [c for c in MARKET_FEATURE_COLUMNS if c in columns]
     if not available:
@@ -70,10 +85,13 @@ def select_feature_columns(columns, rows):
         available = [c for c in columns if c not in DATA_ARTIFACT_COLUMNS]
 
     kept = []
+    total = len(rows) or 1
     for c in available:
         vals = [r.get(c) for r in rows]
         numeric = [float(v) for v in vals if v is not None]
         if not numeric:
+            continue
+        if len(numeric) / total < MIN_FEATURE_COVERAGE:
             continue
         if len(set(numeric)) <= 1:
             continue  # constant: no information

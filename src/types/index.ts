@@ -492,6 +492,37 @@ export interface PerformanceReport {
   };
   confidence_intervals: Partial<Record<"sharpe" | "cagr" | "mean", BootstrapCI>>;
   cost_model: { bps: number; label: string };
+  /**
+   * Selection-bias adjustment.
+   *
+   * The reported Sharpe is the best of an enumerated set of configurations
+   * rather than one fixed in advance, so it is compared against what the best
+   * of that many random strategies would be expected to reach. When the
+   * observed figure does not clear that bar, `survives_selection_at_95pct` is
+   * false and `probability_of_false_positive` says how often a result this
+   * strong would arise by chance.
+   */
+  selection_bias?: {
+    observed_sharpe: number;
+    observed_sharpe_periodic: number;
+    expected_max_sharpe_under_null: number;
+    expected_max_sharpe_periodic: number;
+    expected_max_sharpe_simulated: number;
+    calibration_ratio: number;
+    deflated_sharpe: number;
+    deflated_sharpe_simulated: number;
+    probability_of_false_positive: number;
+    survives_selection_at_95pct: boolean;
+    trials_enumerated: number;
+    trials_effective: number;
+    skew: number;
+    excess_kurtosis: number;
+    observations: number;
+    variance_term_degenerate: boolean;
+    annualisation: string;
+    note: string;
+    error?: string;
+  };
 }
 
 /** One symbol's fundamental-data status, and why it is what it is. */

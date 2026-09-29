@@ -43,6 +43,7 @@ export function BacktestReliability() {
   const { risk_free_assumption: rf, return_path: rp, risk_adjusted: ra } =
     report;
   const vb = report.vs_benchmark;
+  const sb = report.selection_bias;
   const mt = report.mean_return_test;
   const ci = report.confidence_intervals ?? {};
   const sharpeCI = ci.sharpe;
@@ -180,6 +181,85 @@ export function BacktestReliability() {
           correction widens the interval rather than flattering it.
         </p>
       </Card>
+
+      {/* Was the Sharpe selected, or fixed in advance? */}
+      {sb && sb.observed_sharpe !== undefined && (
+        <Card
+          title="Was this Sharpe chosen, or found?"
+          subtitle="Best of how many configurations, against what luck would produce"
+        >
+          <div
+            className={`rounded-lg border p-3 mb-3 ${
+              sb.survives_selection_at_95pct
+                ? "border-emerald-200 bg-emerald-50"
+                : "border-amber-300 bg-amber-50"
+            }`}
+          >
+            <p className="text-xs text-slate-700 leading-relaxed">
+              The allocation search evaluated{" "}
+              <span className="font-medium">{sb.trials_enumerated}</span>{" "}
+              configurations. Adjacent grid points produce correlated
+              portfolios, so only {sb.trials_effective} are treated as
+              independent trials. The best of that many random strategies
+              would be expected to reach a Sharpe of about{" "}
+              <span className="font-medium">
+                {formatNumber(sb.expected_max_sharpe_under_null)}
+              </span>
+              . This one is {formatNumber(sb.observed_sharpe)}.
+            </p>
+            {!sb.survives_selection_at_95pct && (
+              <p className="text-xs text-amber-900 mt-2 leading-relaxed">
+                Above the bar, but not decisively: a strategy this strong
+                appears by chance roughly{" "}
+                <span className="font-medium">
+                  {(sb.probability_of_false_positive * 100).toFixed(0)}% of the
+                  time
+                </span>
+                . The deflated figure is{" "}
+                <span className="font-medium">
+                  {formatNumber(sb.deflated_sharpe)}
+                </span>
+                . That is what the sample supports, not a defect in the
+                arithmetic. Closing the gap needs more out-of-sample history,
+                or a strategy fixed in advance rather than searched for.
+              </p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard
+              label="Observed Sharpe"
+              value={formatNumber(sb.observed_sharpe)}
+              subvalue="annualised"
+              color="slate"
+            />
+            <StatCard
+              label="Luck bar"
+              value={formatNumber(sb.expected_max_sharpe_under_null)}
+              subvalue={`best of ${sb.trials_effective} by chance`}
+              color="amber"
+            />
+            <StatCard
+              label="Deflated Sharpe"
+              value={formatNumber(sb.deflated_sharpe)}
+              subvalue="observed minus the bar"
+              color={sb.survives_selection_at_95pct ? "green" : "amber"}
+            />
+            <StatCard
+              label="P(false positive)"
+              value={`${(sb.probability_of_false_positive * 100).toFixed(0)}%`}
+              subvalue={
+                sb.survives_selection_at_95pct ? "clears 5%" : "does not clear 5%"
+              }
+              color={sb.survives_selection_at_95pct ? "green" : "amber"}
+            />
+          </div>
+
+          <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+            {sb.note}
+          </p>
+        </Card>
+      )}
 
       {/* Confidence intervals: the number that should temper the headline. */}
       <Card
