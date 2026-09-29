@@ -163,8 +163,19 @@ def assess(db_path: str, now: dt.datetime | None = None) -> dict:
                         behind += 1
                     cursor += dt.timedelta(days=1)
                 # Do not count today itself when the market has not closed yet.
-                if is_trading_day(today) and today == have and now.hour < 16:
-                    behind = 0
+                #
+                # This used to require `today == have` as well, so it only
+                # ever fired when the data already reached today. The check
+                # routinely runs at midnight or in the morning of a trading
+                # day -- the GitHub schedule is 18:30 IST, and any manual run
+                # lands whenever a human ran it. In that state `today` is
+                # legitimately one day beyond the data, the loop counted it,
+                # and the page reported "one trading day behind" plus a stalled
+                # refresh on a system that had delivered every trading day.
+                # A caveat that cries wolf on a healthy pipeline is worse than
+                # no caveat, because it teaches the reader to stop reading them.
+                if is_trading_day(today) and now.hour < 16:
+                    behind = max(0, behind - 1)
             except ValueError:
                 behind = None
         result["eod"]["trading_days_behind"] = behind
@@ -292,14 +303,31 @@ def assess(db_path: str, now: dt.datetime | None = None) -> dict:
                     if r.get("status") == "ok":
                         last_ok = r.get("resolved_date")
                         break
-                if last_ok and behind > 0:
+                # "Stalled" has to mean no *completed trading day* has gone
+                # unrefreshed. If the only trading days since the last success
+                # are today, or today and the weekend, then nothing is late:
+                # the data cannot be more current than the market has closed,
+                # and no run could have delivered a day that has not traded.
+                # Measured on 2026-09-30 at 00:00 IST this reported a stalled
+                # refresh while the previous five trading days had all been
+                # delivered and status=ok.
+                missed = 0
+                if last_ok:
+                    try:
+                        cursor = dt.date.fromisoformat(str(last_ok)[:10]) + dt.timedelta(days=1)
+                        while cursor < today and missed < 30:
+                            if is_trading_day(cursor):
+                                missed += 1
+                            cursor += dt.timedelta(days=1)
+                    except ValueError:
+                        missed = -1
+                if last_ok and missed >= 1:
                     result["issues"].append({
                         "id": "refresh_stalled_after_last_success",
                         "severity": "medium",
                         "detail": (
-                            f"The last refresh that actually delivered data resolved "
-                            f"{last_ok}. Attempts since then have not extended the "
-                            f"series."
+                            f"The last refresh that delivered data resolved {last_ok}, "
+                            f"and {missed} trading day(s) since then went unrefreshed."
                         ),
                     })
     finally:
