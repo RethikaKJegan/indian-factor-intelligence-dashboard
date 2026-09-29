@@ -9,12 +9,22 @@ import {
   formatNumber,
 } from "@/lib/data";
 
+/**
+ * Strategies shown on the curve and drawdown charts, in draw order.
+ *
+ * The stock-level book is listed here too but is rendered from its own month
+ * index (it starts one month later, because a book formed at the close of
+ * month t is first evaluated in t+1). The chart builders below align on the
+ * month label rather than on array position, so the differing lengths do not
+ * shift a series onto the wrong months.
+ */
 const STRATEGIES = [
   "Dynamic Regime Factor Allocation",
   "Static 25/25/25/25",
   "Nifty 200 Buy & Hold",
+  "Universe Equal-Weight",
 ];
-const STRATEGY_COLORS = ["#3b82f6", "#8b5cf6", "#10b981"];
+const STRATEGY_COLORS = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b"];
 
 /**
  * Display names keyed by full strategy name, never by array position. A
@@ -24,7 +34,8 @@ const STRATEGY_COLORS = ["#3b82f6", "#8b5cf6", "#10b981"];
 const STRATEGY_SHORT: Record<string, string> = {
   "Dynamic Regime Factor Allocation": "Dynamic",
   "Static 25/25/25/25": "Static 25/25",
-  "Nifty 200 Buy & Hold": "Benchmark",
+  "Nifty 200 Buy & Hold": "Nifty 200",
+  "Universe Equal-Weight": "Universe EW",
 };
 
 const shortName = (full: string) => STRATEGY_SHORT[full] ?? full;
@@ -39,7 +50,9 @@ const STRATEGY_BLURB: Record<string, string> = {
   "Static 25/25/25/25":
     "Equal 25% in every factor every month. No timing, no regime input. The control.",
   "Nifty 200 Buy & Hold":
-    "The benchmark: 100% in the Nifty 200 index, bought once and held. No model at all.",
+    "100% in the Nifty 200 price index, bought once and held. Cap-weighted and price-only, so dividends are excluded.",
+  "Universe Equal-Weight":
+    "Every stock in the 189-name universe, equal weight, rebalanced monthly. No factors at all. This is the baseline the factor layer has to beat, and beating it is the point.",
 };
 
 export function BacktestPage() {
@@ -59,15 +72,34 @@ export function BacktestPage() {
   const dynCurve = btPortfolio.filter((b) => b.strategy_name === STRATEGIES[0]);
   const xLabels = dynCurve.map((b) => b.month);
 
+  /**
+   * Align every series to the shared month axis before plotting.
+   *
+   * Strategies are not guaranteed to cover the same months: the stock-level
+   * book starts one month later, and a strategy can be absent from a run
+   * entirely. Mapping straight to `.map()` would therefore plot one series'
+   * values against another series' months. Indexing by month label and
+   * emitting `null` for a gap lets the chart break the line there instead.
+   */
+  const aligned = (sname: string, pick: (b: (typeof btPortfolio)[number]) => number) => {
+    const byMonth = new Map(
+      btPortfolio.filter((b) => b.strategy_name === sname).map((b) => [b.month, pick(b)]),
+    );
+    return xLabels.map((m) => {
+      const v = byMonth.get(m);
+      return v == null || Number.isNaN(v) ? null : v;
+    });
+  };
+
   const equityData = STRATEGIES.map((sname) => ({
     label: shortName(sname),
-    values: btPortfolio.filter((b) => b.strategy_name === sname).map((b) => b.portfolio_value),
+    values: aligned(sname, (b) => b.portfolio_value),
   }));
 
   // Drawdown
   const drawdownData = STRATEGIES.map((sname) => ({
     label: shortName(sname),
-    values: btPortfolio.filter((b) => b.strategy_name === sname).map((b) => b.drawdown),
+    values: aligned(sname, (b) => b.drawdown),
   }));
 
   // Monthly returns heatmap for Dynamic

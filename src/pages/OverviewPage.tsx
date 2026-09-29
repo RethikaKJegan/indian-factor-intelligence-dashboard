@@ -1,5 +1,6 @@
 import { Card, StatCard, RegimeBadge, DecisionBadge, Table, ProgressBar } from "@/components/UI";
 import { DonutChart, LineChart } from "@/components/Charts";
+import { ForwardOutlookPanel } from "@/components/ForwardOutlook";
 import {
   getOverviewData,
   getRegimePredictions,
@@ -12,6 +13,21 @@ import {
 } from "@/lib/data";
 import { Gauge, TrendingUp, Shield, Target, Activity, AlertTriangle, Briefcase, BarChart3 } from "lucide-react";
 import type { FactorName } from "@/types";
+
+/**
+ * Short labels for the strategy comparison table, keyed by exact name.
+ *
+ * "Universe Equal-Weight" is labelled as a baseline rather than a strategy:
+ * it is the number the factor layer is measured against, and reading it as a
+ * fourth model would hide that it contains no factor logic at all.
+ */
+const OVERVIEW_STRATEGY_LABEL: Record<string, string> = {
+  "Dynamic Regime Factor Allocation": "Dynamic",
+  "Static 25/25/25/25": "Static 25/25",
+  "Nifty 200 Buy & Hold": "Nifty 200",
+  "Universe Equal-Weight": "Universe EW (baseline)",
+  "Stock-Level Constrained Portfolio": "Stock-level",
+};
 
 export function OverviewPage() {
   const overview = getOverviewData();
@@ -39,6 +55,7 @@ export function OverviewPage() {
 
   const equityCurve = btPortfolio.filter((b) => b.strategy_name === "Dynamic Regime Factor Allocation");
   const benchCurve = btPortfolio.filter((b) => b.strategy_name === "Nifty 200 Buy & Hold");
+  const ewCurve = btPortfolio.filter((b) => b.strategy_name === "Universe Equal-Weight");
   const xLabels = equityCurve.map((b) => b.month);
 
   // Newest first, so the current month is the top row.
@@ -153,17 +170,28 @@ export function OverviewPage() {
           </div>
         </Card>
 
-        <Card title="Equity Curve" subtitle="Dynamic strategy vs Nifty 200 benchmark" className="lg:col-span-2">
+        <Card
+          title="Equity Curve"
+          subtitle="Dynamic strategy against both benchmarks"
+          className="lg:col-span-2"
+        >
           <LineChart
             data={[
               { label: "Dynamic", values: equityCurve.map((b) => b.portfolio_value) },
+              { label: "Universe EW", values: ewCurve.map((b) => b.portfolio_value) },
               { label: "Nifty 200 B&H", values: benchCurve.map((b) => b.portfolio_value) },
             ]}
             xLabels={xLabels}
-            colors={["#3b82f6", "#10b981"]}
+            colors={["#3b82f6", "#f59e0b", "#10b981"]}
             yFormat={(v) => v.toFixed(0)}
             height={280}
           />
+          <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+            The cap-weighted Nifty 200 price index is a weak yardstick for a
+            factor book tilted toward smaller names. The equal-weight line is the
+            same 189-stock universe with no factor logic at all, and it is the
+            comparison that actually says whether the factors earned their keep.
+          </p>
         </Card>
       </div>
 
@@ -198,7 +226,9 @@ export function OverviewPage() {
             ]}
             data={summaries.map((s) => ({
               ...s,
-              strategy_name: s.strategy_name.replace("Dynamic Regime Factor Allocation", "Dynamic").replace("Nifty 200 Buy & Hold", "Benchmark"),
+              // Map by exact name. A chained .replace() silently leaves a
+              // renamed strategy showing its full internal label.
+              strategy_name: OVERVIEW_STRATEGY_LABEL[s.strategy_name] ?? s.strategy_name,
               cagr: formatPercent(s.cagr),
               sharpe: formatNumber(s.sharpe),
               max_drawdown: formatPercent(s.max_drawdown),
@@ -208,6 +238,9 @@ export function OverviewPage() {
           />
         </Card>
       </div>
+
+      {/* Forward view: what the model expects next, and how it has done before */}
+      <ForwardOutlookPanel />
     </div>
   );
 }

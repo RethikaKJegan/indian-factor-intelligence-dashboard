@@ -36,6 +36,7 @@ import type {
   ExperimentManifest,
   FundamentalCoverageAudit,
   PointInTimeSurvivorship,
+  ForwardOutlook,
 } from "@/types";
 import { REGIME_LABELS } from "@/types";
 
@@ -85,6 +86,7 @@ let constraintCompliance: PortfolioConstraintCompliance | null = null;
 let experimentManifest: ExperimentManifest | null = null;
 let coverageAudit: FundamentalCoverageAudit | null = null;
 let pointInTime: PointInTimeSurvivorship | null = null;
+let forwardOutlook: ForwardOutlook | null = null;
 let dashboardDataLoaded = false;
 
 const DATA_BASE = "/data";
@@ -144,6 +146,7 @@ export async function loadDashboardData(): Promise<void> {
     experimentManifestJson,
     coverageAuditJson,
     pointInTimeJson,
+    forwardOutlookJson,
   ] = await Promise.all([
     fetchDataFile<RegimePrediction[]>("regime_predictions"),
     fetchDataFile<FactorBasketEntry[]>("factor_baskets"),
@@ -178,6 +181,7 @@ export async function loadDashboardData(): Promise<void> {
       "fundamental_coverage_audit",
     ),
     fetchOptionalDataFile<PointInTimeSurvivorship>("point_in_time_universe"),
+    fetchOptionalDataFile<ForwardOutlook>("forward_outlook"),
   ]);
 
   regimes = regimesJson;
@@ -209,6 +213,7 @@ export async function loadDashboardData(): Promise<void> {
   experimentManifest = experimentManifestJson;
   coverageAudit = coverageAuditJson;
   pointInTime = pointInTimeJson;
+  forwardOutlook = forwardOutlookJson;
   dashboardDataLoaded = true;
 }
 
@@ -423,6 +428,15 @@ export function getPointInTimeSurvivorship(): PointInTimeSurvivorship | null {
   return pointInTime;
 }
 
+/**
+ * The T+1 forward view and the out-of-sample record of how the model's own
+ * past forecasts scored. Returns null when the pipeline has not emitted it, so
+ * a page can degrade to a plain notice instead of rendering empty panels.
+ */
+export function getForwardOutlook(): ForwardOutlook | null {
+  return forwardOutlook;
+}
+
 export function getOverviewData(): OverviewData | null {
   const latestRegime = getLatestRegime();
   const latestAlloc = getLatestAllocation();
@@ -542,13 +556,32 @@ export function getSectorExposure(
     .sort((a, b) => b.weight - a.weight);
 }
 
+/**
+ * Attribution of portfolio weight to the factors that selected each holding.
+ *
+ * A holding can sit in more than one factor basket, and its `target_weight` is
+ * the sum of the sleeve weights that reached it. Adding that full weight into
+ * every factor it belongs to counts it once per factor, so the returned
+ * figures summed to 139% of the portfolio on the 2026-09 book while the
+ * Allocation page reported 100% for the same month -- two pages disagreeing
+ * about the same portfolio.
+ *
+ * The weight is therefore split evenly across the factors that claim it, so
+ * the total is the portfolio weight and the bars are comparable with the
+ * allocation weights. This is equal attribution within a holding, not a claim
+ * that each sleeve contributed half the return; `combined_score` is what
+ * ranks the holdings.
+ */
 export function getFactorExposure(
   targets: PortfolioTarget[]
 ): FactorExposure[] {
   const byFactor: Record<string, number> = {};
   for (const t of targets) {
-    for (const f of t.factor_sources) {
-      byFactor[f] = (byFactor[f] || 0) + t.target_weight;
+    const sources = t.factor_sources ?? [];
+    if (sources.length === 0) continue;
+    const share = t.target_weight / sources.length;
+    for (const f of sources) {
+      byFactor[f] = (byFactor[f] || 0) + share;
     }
   }
   return (Object.entries(byFactor) as [FactorName, number][])

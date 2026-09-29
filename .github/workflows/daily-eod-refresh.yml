@@ -115,6 +115,25 @@ jobs:
           fi
           exit 0
 
+      # Contract tests over the artifacts this run just produced. These are the
+      # gate that was missing when four JSON exports shipped as hundreds of rows
+      # of nulls and survived a full pipeline rewrite: nothing asserted that a
+      # published column had values, or that the reported CAGR still matched the
+      # return series beside it. Placed before the commit so a contract failure
+      # blocks publishing rather than being noticed afterwards.
+      #
+      # Unlike the freshness checks above, this one is a hard gate. A stale
+      # dashboard is a known, labelled condition; a broken contract is a defect.
+      - name: Contract tests on published artifacts
+        run: python scripts/test_dashboard_contracts.py
+
+      - name: Frontend typecheck, lint and build
+        run: |
+          npm ci
+          npm run typecheck
+          npm run lint
+          npm run build
+
       - name: Commit updated data snapshot
         run: |
           git config user.name "github-actions[bot]"

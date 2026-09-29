@@ -211,6 +211,65 @@ Momentum and Low Volatility remain price-based and are read from the stored
 table; the price layer already skips the current month, so there is no
 leakage to correct there.
 
+### The equal-weight baseline, and what it says about the factors
+
+`Universe Equal-Weight` is now a reported strategy: every stock in the
+189-name universe, equal weight, rebalanced monthly, with no factor logic at
+all. It is in `backtest_summary`, on the equity-curve chart, and in the
+strategy table.
+
+It is there because the Nifty 200 price index is a weak yardstick for a factor
+book tilted toward smaller names. The index is cap-weighted and price-only; the
+investable universe equal-weighted is neither. Measured over the same 152
+months:
+
+| Strategy | CAGR | vs equal-weight baseline |
+|---|---|---|
+| **Universe Equal-Weight** (no factors) | **25.04%** | — |
+| Dynamic Regime Factor Allocation | 20.22% | **−4.82pp p.a.** |
+| Static 25/25/25/25 | 20.69% | **−4.35pp p.a.** |
+| **Stock-Level Constrained Portfolio** (20bps) | **26.58%** | **+1.54pp p.a.** |
+
+**The factor sleeves do not beat holding the universe equally.** Read against
+Nifty 200 the same strategies appear to gain roughly 8pp a year; that figure is
+borrowed from the equal-weight effect, not earned by the factors. The
+stock-level construction — real holdings, 5% cap, sector cap, net of traded
+turnover — is the only book that clears the baseline, by about 1.5pp a year
+against a 95% interval of roughly 13% to 40%.
+
+All four numbers are published together. The factor layer's shortfall is
+reported, not omitted, and neither is the baseline that exposes it.
+
+### Forward outlook, and scoring the model's own forecasts
+
+`forward_outlook.json` carries two things.
+
+**The T+1 forecast.** The next rebalance month's expected return, volatility
+and turnover, plus the regime probability vector. It is not a second model: the
+expected factor returns are the optimiser's own decayed trailing inputs,
+persisted as `er_*` on every allocation row specifically so the panel cannot
+drift from the weights it explains.
+
+**The accuracy record.** Every past forecast, scored against what actually
+happened, out of sample only:
+
+| Measure | Value |
+|---|---|
+| Directional hit rate | **65.85%** over 366 sleeve-months (93 months) |
+| Information coefficient | **+0.081** (n=372) |
+| Mean absolute error | 4.38% mean across sleeves |
+
+The information coefficient is small and that is reported rather than
+smoothed over: a monthly factor forecast is worth far less than a daily stock
+signal, and claiming otherwise would be the error this project spent most of
+its effort removing elsewhere. The per-month table on the Overview page shows
+the misses too — 2026-03 scored 0 of 4 sleeves right.
+
+Any measure with too few observations is published as `null` alongside the
+count that blocked it, rather than as a number computed from four months that
+would look like evidence.
+
+
 ### Stock-level backtest (§13)
 
 The previous backtest compounded factor returns:
@@ -778,9 +837,51 @@ Universe coverage policy. Defines how much data a symbol needs before it can
 be modeled, derives the excluded set from the database on every run, and
 documents why each known exclusion exists. See "Index Coverage" above.
 
+```text
+scripts/forward_outlook.py
+```
+
+Builds the T+1 forecast from the optimiser's own inputs and scores every past
+forecast against its realised outcome, out of sample. Also the module that
+decides when a measure is too small to publish. See "Forward outlook" above.
+
+```text
+scripts/news_relevance.py
+```
+
+Entity tagging and relevance scoring for fetched articles. Matches each
+headline against the 189 symbols and 16 sectors, scores relevance from symbol
+matches, sector matches and market vocabulary, and weights the monthly and
+daily sentiment aggregates by it.
+
+Sentiment and risk are relevance-weighted means, not plain means. A plain mean
+treats a story naming a constituent and a general-interest story as equally
+informative, so unrelated headlines diluted the signal while their keyword
+hits still inflated `risk_event_count`. `news_confidence` is now coverage-based
+— it rises with the share of articles that actually name the universe, so a
+month of untagged headlines cannot look high-confidence.
+
+The general-interest Economic Times feed was removed for the same reason. It
+was the sole source of every non-market headline that reached the model, and
+`news_stress_score` feeds the allocation optimiser, so those items were moving
+Indian factor weights. Every remaining feed is market-specific by
+construction. In the latest run 30.9% of articles name a constituent and 78
+are classified `off_topic`.
+
+```text
+scripts/test_dashboard_contracts.py
+```
+
+Ten guard tests over the published artifacts, each tied to a fault that
+reached `public/data/*.json` and survived a pipeline rewrite because nothing
+checked for it. Run with `python scripts/test_dashboard_contracts.py` or
+`python -m pytest scripts/test_dashboard_contracts.py -q`.
+
 ## Notes
 
 - The EOD refresh script does not create mock data. If NSE data is unavailable, it records a failure or no-data status.
 - Index data may be unavailable from the NiftyIndices API on some runs; the script records this rather than inventing index rows.
 - RSS feeds are optional supporting evidence. The pipeline uses working Economic Times and Google News RSS feeds.
+- `market_index.json` publishes `open`/`high`/`low` as null with an `ohlc_note`: `market_index_monthly` stores a month-end close and no intraday range. These are the only deliberately-null columns, and a test asserts the note is present.
+- `macro_monthly.json` publishes `fii_net`/`dii_net` as null with a `flows_note`: the database columns `monthly_fii_flow` and `monthly_dii_flow` are empty for all 414 rows even though the scraped FII/DII CSV carries both. That is an ingestion gap in the database build, not an export fault, and it is stated rather than left to look like a bug.
 - This is a research dashboard, not investment advice or an automated trading system.

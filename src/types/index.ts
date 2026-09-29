@@ -40,7 +40,19 @@ export type DecisionType = "REBALANCE" | "RETAIN" | "DEFENSIVE";
 export type StrategyName =
   | "Dynamic Regime Factor Allocation"
   | "Static 25/25/25/25"
-  | "Nifty 200 Buy & Hold";
+  | "Nifty 200 Buy & Hold"
+  /**
+   * Equal-weight portfolio of the whole investable universe, no factor logic.
+   *
+   * This is the baseline the factor layer has to beat. The Nifty 200 price
+   * index is cap-weighted and price-only, so a factor book tilted toward
+   * smaller names looks good against it for reasons that have nothing to do
+   * with the factors. Reporting this alongside makes the factor result
+   * interpretable rather than merely flattering.
+   */
+  | "Universe Equal-Weight"
+  /** The authoritative stock-level book, net of traded turnover. */
+  | "Stock-Level Constrained Portfolio";
 
 /**
  * A month scored by the regime model.
@@ -619,6 +631,90 @@ export interface PointInTimeSurvivorship {
   backtest_months_ungated: number;
   backtest_months_gated_pct: number;
   interpretation: string;
+}
+
+/** Factor names as used by the forward-outlook payload. */
+export type OutlookFactor = "Momentum" | "Value" | "Quality" | "Low Volatility";
+
+/**
+ * The T+1 forecast for one decision month.
+ *
+ * `expected_factor_returns` are the optimiser's own per-sleeve inputs, not a
+ * separately estimated figure for display: a forecast that disagreed with the
+ * weights it explains would be a second model wearing the first one's name.
+ */
+export interface ForecastMonth {
+  month: string;
+  horizon: string;
+  factor_weights: Record<OutlookFactor, number>;
+  expected_factor_returns: Record<OutlookFactor, number | null>;
+  expected_portfolio_return: number | null;
+  expected_volatility: number | null;
+  expected_turnover: number | null;
+  regime_probabilities: Record<string, number | null>;
+  regime_top_label: string | null;
+  regime_top_probability: number | null;
+  /** Top probability minus the runner-up: how decisive the regime call was. */
+  regime_margin_over_runner_up: number | null;
+  news_stress_score: number | null;
+  decision?: string | null;
+  sector_tilt_top?: Record<string, number> | null;
+  method: string;
+}
+
+/**
+ * One month's forecast, scored against what actually happened.
+ *
+ * `hit` counts sleeves whose predicted direction matched; `scored_sleeves` is
+ * the denominator and excludes sleeves the model declined to forecast, so a
+ * refusal to call a sleeve is not scored as a miss.
+ */
+export interface ForecastScoreRow {
+  month: string;
+  hit: number;
+  scored_sleeves: number;
+  abs_error: Record<OutlookFactor, number | null>;
+  predicted: Record<OutlookFactor, number | null>;
+  realised: Record<OutlookFactor, number | null>;
+}
+
+export interface ForecastCalibrationBucket {
+  bucket: string;
+  months: number;
+  /** null when the bucket holds too few months to support a rate. */
+  hit_rate: number | null;
+  suppressed_below_months: number;
+}
+
+export interface ForecastAccuracy {
+  months_scored: number;
+  sleeve_observations: number;
+  /** null below `hit_rate_suppressed_below_months` observations. */
+  hit_rate: number | null;
+  hit_rate_suppressed_below_months: number;
+  mae_by_factor: Record<OutlookFactor, { mae: number | null; n: number }>;
+  /** null when the sample is too small or the forecast has no variance. */
+  information_coefficient: {
+    value: number;
+    n: number;
+    note: string;
+  } | null;
+  calibration: ForecastCalibrationBucket[];
+  by_month: ForecastScoreRow[];
+  interpretation: string;
+}
+
+export interface ForwardOutlook {
+  generated_for: string | null;
+  latest_forecast: ForecastMonth | null;
+  forecast_history: ForecastMonth[];
+  accuracy: ForecastAccuracy | null;
+  how_to_read: {
+    forecast: string;
+    accuracy: string;
+    suppression_rule: string;
+    not_advice: string;
+  };
 }
 
 /**

@@ -26,6 +26,8 @@ import performance_stats
 import risk_free
 import coverage_audit
 import news_history
+import news_relevance
+import forward_outlook
 import selection_bias
 import experiment_manifest
 import data_freshness
@@ -198,9 +200,9 @@ def source_name_from_url(url):
 
 def sentiment_and_risk(title, summary):
     text = f"{title} {summary}".lower()
-    positive = ["growth", "gain", "rally", "surge", "profit", "strong", "boost", "record", "upgrade", "eases", "cut", "inflows", "expansion"]
-    negative = ["fall", "falls", "drop", "loss", "weak", "stress", "crisis", "default", "downgrade", "inflation", "hike", "war", "selloff", "outflows", "slump", "crash", "risk"]
-    risk_words = ["inflation", "rate hike", "rbi", "crude", "rupee", "fii", "selling", "recession", "default", "downgrade", "war", "banking stress", "liquidity", "crash", "volatility", "sebi", "policy"]
+    positive = ["growth", "gain", "rally", "surge", "profit", "strong", "boost", "record", "upgrade", "eases", "cut", "inflows", "expansion", "beat", "buyback", "dividend", "expands", "recovers", "jumps", "rallying", "wins"]
+    negative = ["fall", "falls", "drop", "loss", "weak", "stress", "crisis", "default", "downgrade", "inflation", "hike", "war", "selloff", "outflows", "slump", "crash", "risk", "miss", "misses", "sinks", "slashes", "plunges", "downturn", "strikes", "strike", "curbs", "penalty", "probe", "fraud", "warns", "cuts", "sheds"]
+    risk_words = ["inflation", "rate hike", "rbi", "crude", "rupee", "fii", "selling", "recession", "default", "downgrade", "war", "banking stress", "liquidity", "crash", "volatility", "sebi", "policy", "strike", "probe", "fraud", "penalty", "curb", "ban", "writ", "notice", "default"]
     pos = sum(1 for w in positive if w in text)
     neg = sum(1 for w in negative if w in text)
     sentiment = 0.0 if pos == neg else (pos - neg) / max(1, pos + neg)
@@ -271,8 +273,16 @@ def rss_news_agent():
             line = line.strip()
             if line.startswith("http"):
                 sources.append(line)
+    # General-interest feeds are deliberately absent.
+    #
+    # `economictimes.indiatimes.com/rssfeedstopstories.cms` was in this list and
+    # was the sole source of every non-market headline that reached the model:
+    # sports, temple politics, school appointments. Those articles carry a
+    # sentiment score and a risk-event count, and `news_stress_score` feeds the
+    # allocation optimiser, so an item about a US Federal Reserve speech or a
+    # basketball endorsement was moving Indian factor weights. Every feed below
+    # is market-specific by construction.
     working_feeds = [
-        "https://economictimes.indiatimes.com/rssfeedstopstories.cms",
         "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
         "https://economictimes.indiatimes.com/markets/stocks/rssfeeds/2146842.cms",
         "https://news.google.com/rss/search?q=India%20stock%20market%20Nifty%20RBI%20inflation%20when:7d&hl=en-IN&gl=IN&ceid=IN:en",
@@ -285,6 +295,18 @@ def rss_news_agent():
     headers = {"User-Agent": "Mozilla/5.0 FinancialRegimeDashboard/1.0"}
     import feedparser
     failed_feeds = []
+
+    # Entity tagging needs the universe, so the matcher tables are built once
+    # from the database before any article is scored.
+    try:
+        _c = sqlite3.connect(str(INPUT_DB))
+        _syms = [r[0] for r in _c.execute("SELECT DISTINCT symbol FROM fundamentals_monthly") if r[0]]
+        _secs = [r[0] for r in _c.execute("SELECT DISTINCT sector FROM fundamentals_monthly") if r[0]]
+        _c.close()
+    except Exception:
+        _syms, _secs = [], []
+    matchers = news_relevance.build_matchers(_syms, _secs)
+
     for feed_url in sorted(sources):
         try:
             parsed = feedparser.parse(feed_url, request_headers=headers)
@@ -307,6 +329,7 @@ def rss_news_agent():
             if not title or not link:
                 continue
             sentiment, risk_count = sentiment_and_risk(title, summary)
+            tags = news_relevance.score_article(title, summary, matchers)
             aid = hashlib.sha1(f"{link}|{title}".encode("utf-8", errors="ignore")).hexdigest()[:16]
             articles_by_id[aid] = {
                 "article_id": aid,
@@ -320,6 +343,10 @@ def rss_news_agent():
                 "sentiment": sentiment,
                 "risk_event_count": risk_count,
                 "is_negative": sentiment < -0.05,
+                "symbols": tags["symbols"],
+                "sector_hits": tags["sector_hits"],
+                "relevance": tags["relevance"],
+                "relevance_band": tags["relevance_band"],
                 "feed_url": feed_url
             }
 
@@ -329,6 +356,9 @@ def rss_news_agent():
             print(f"  RSS warning: {f['reason']} from {f['feed_url']}")
     elif failed_feeds:
         print(f"  RSS note: skipped {len(failed_feeds)} empty/unavailable optional feeds; fetched {len(articles_by_id)} unique articles.")
+    _cov = news_relevance.relevance_summary(articles)
+    print(f"  News tagging: {_cov['tagged_with_symbols']}/{_cov['articles']} articles name a "
+          f"constituent ({_cov['symbol_tag_pct']}%); bands {_cov['bands']}")
     return _news_outputs_from(articles, failed_feeds)
 
 
@@ -337,30 +367,58 @@ def _news_outputs_from(articles, failed_feeds, from_snapshot=False):
 
     Shared by the live-fetch and snapshot paths so both produce byte-identical
     outputs from the same articles.
+
+    Sentiment and risk are aggregated as *relevance-weighted* means rather than
+    plain means. A plain mean treats a story naming a constituent and a
+    general-interest story as equally informative, so unrelated headlines
+    diluted the signal and their keyword hits still raised `risk_event_count`.
+    Weighting by `relevance` lets a strongly-tagged article dominate and leaves
+    an untagged one contributing almost nothing, while the untagged article is
+    still counted in `article_count` so coverage stays visible.
     """
     monthly = {}
     daily = {}
     for a in articles:
+        rel = float(a.get("relevance") or 0.0)
         for key, bucket in [(a["month"], monthly), (a["published_date"], daily)]:
             if key not in bucket:
-                bucket[key] = {"sentiments": [], "negative": 0, "risk": 0, "count": 0}
-            bucket[key]["sentiments"].append(a["sentiment"])
-            bucket[key]["negative"] += 1 if a["is_negative"] else 0
-            bucket[key]["risk"] += a["risk_event_count"]
+                bucket[key] = {"wsum": 0.0, "sentiments": [], "negative": 0,
+                               "risk": 0.0, "count": 0, "tagged": 0}
+            bucket[key]["sentiments"].append((a["sentiment"], rel))
+            bucket[key]["wsum"] += rel
+            bucket[key]["negative"] += 1 if a["is_negative"] and rel > 0 else 0
+            bucket[key]["risk"] += a["risk_event_count"] * rel
             bucket[key]["count"] += 1
+            bucket[key]["tagged"] += 1 if a.get("symbols") else 0
 
     def feature_rows(bucket, key_name):
         rows = []
         for key in sorted(bucket):
             b = bucket[key]
             count = b["count"]
+            wsum = b["wsum"]
+            # Relevance-weighted mean sentiment. When nothing in the period was
+            # tagged the weights are all zero, so fall back to the unweighted
+            # mean and say so via `news_confidence = 0` rather than reporting a
+            # flat 0.0 that would read as a genuinely neutral month.
+            if wsum > 0:
+                sent = sum(s * w for s, w in b["sentiments"]) / wsum
+            else:
+                sent = sum(s for s, _ in b["sentiments"]) / len(b["sentiments"]) if b["sentiments"] else 0.0
+            # Confidence is coverage-weighted: it rises with the share of
+            # articles that actually name the universe, and it is reported
+            # against a fixed 20 tagged articles rather than 20 articles, so a
+            # month of 40 untagged headlines cannot look high-confidence.
+            conf = round(min(1.0, b["tagged"] / 20.0) * min(1.0, wsum / 3.0), 4)
             rows.append({
                 key_name: key,
-                "sentiment_score": round(float(np.mean(b["sentiments"])), 4) if b["sentiments"] else 0.0,
+                "sentiment_score": round(float(sent), 4),
                 "negative_ratio": round(b["negative"] / count, 4) if count else 0.0,
                 "article_count": count,
-                "risk_event_count": b["risk"],
-                "news_confidence": round(min(1.0, count / 20), 4)
+                "tagged_article_count": b["tagged"],
+                "relevance_mass": round(wsum, 4),
+                "risk_event_count": round(b["risk"], 4),
+                "news_confidence": conf,
             })
         return rows
 
@@ -1341,6 +1399,18 @@ def allocation_optimizer_agent(factor_returns, diagnostics, regime_preds, news_f
             "low_volatility_weight": round(float(best_w[3]), 4),
             "expected_return": round(exp_ret, 6),
             "expected_risk": round(exp_risk, 6),
+            # The per-sleeve expected returns are persisted, not just their
+            # weighted sum. `forward_outlook` reports the forecast the model
+            # actually acted on; recomputing a separate estimate for display
+            # would let the panel and the optimiser disagree without anything
+            # in the data recording it.
+            "er_momentum": round(float(er[0]), 6),
+            "er_value": round(float(er[1]), 6),
+            "er_quality": round(float(er[2]), 6),
+            "er_low_volatility": round(float(er[3]), 6),
+            "er_window": ER_WINDOW,
+            "er_halflife": ER_HALFLIFE,
+            "er_observations": len(window),
             "turnover": round(turnover, 4),
             "redundancy_score": redundancy,
             "optimizer_status": "grid_search_5pct_news_adjusted",
@@ -1697,6 +1767,24 @@ def backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_
     bench_values = [100.0]
     bench_returns = [0.0]
 
+    # Strategy 4: equal-weight the investable universe, with no factor logic
+    # at all. This is the baseline the factor layer has to beat, and for a
+    # 189-name universe it is a hard one to beat: the Nifty 200 price index
+    # is cap-weighted and price-only, so comparing a small-cap-tilted factor
+    # book only against it flatters the strategy. Reporting the equal-weight
+    # number next to it is what makes the factor result interpretable rather
+    # than merely flattering.
+    ew_values = [100.0]
+    ew_returns = [0.0]
+    cursor.execute(
+        "SELECT month, AVG(monthly_return) FROM stock_prices_monthly "
+        "WHERE monthly_return IS NOT NULL GROUP BY month"
+    )
+    ew_by_month = {}
+    for m, r in cursor.fetchall():
+        if r is not None:
+            ew_by_month[str(m)[:7]] = float(r)
+
     prev_dyn_w = [0.25, 0.25, 0.25, 0.25]
 
     for i, month in enumerate(bt_months):
@@ -1744,12 +1832,20 @@ def backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_
         bench_values.append(bench_values[-1] * (1 + bench_ret))
         bench_returns.append(bench_ret)
 
+        # Equal-weight universe
+        ew_ret = ew_by_month.get(month)
+        if ew_ret is None:
+            ew_ret = 0.0
+        ew_values.append(ew_values[-1] * (1 + ew_ret))
+        ew_returns.append(ew_ret)
+
     # Build portfolio points
     bt_portfolio = []
     strategies = [
         ("Dynamic Regime Factor Allocation", dyn_values, dyn_returns),
         ("Static 25/25/25/25", static_values, static_returns),
         ("Nifty 200 Buy & Hold", bench_values, bench_returns),
+        ("Universe Equal-Weight", ew_values, ew_returns),
     ]
 
     # Authoritative stock-level strategy (spec sec 13).
@@ -2004,7 +2100,8 @@ def backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_
 
 # ─── ChartSignalAgent ───
 def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset(),
-                       news_features=None):
+                       news_features=None, allocations=None, regime_preds=None,
+                       diagnostics=None, portfolio_targets=None, decisions=None):
     print("[ChartSignalAgent] Starting...")
     cursor = conn.cursor()
 
@@ -2060,60 +2157,132 @@ def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset(),
     write_json("stock_prices", prices)
 
     # Market index
-    cursor.execute("SELECT * FROM market_index_monthly ORDER BY month")
-    cols = [d[0] for d in cursor.description]
+    #
+    # The columns are aliased in SQL rather than renamed in the dict lookup
+    # below. These four tables store monthly values under `monthly_*` names, and
+    # asking for the bare `close`/`return` returned None for every row, so
+    # `market_index.json` shipped 306 rows of nulls. Aliasing makes the SQL the
+    # single place where the physical name is mapped to the published one, and
+    # a wrong name becomes a query error rather than silent nulls.
+    #
+    # There is no monthly OHLC in `market_index_monthly` -- the table holds a
+    # month-end close only. open/high/low are published as explicit nulls with
+    # a note rather than as invented values, so a consumer can tell "not
+    # collected" from "collected and zero".
+    cursor.execute(
+        "SELECT month, index_name, monthly_close AS close, "
+        "monthly_return AS return, monthly_drawdown AS drawdown, "
+        "monthly_volatility AS volatility, vix_avg, vix_max "
+        "FROM market_index_monthly ORDER BY month"
+    )
+    mkt_cols = [d[0] for d in cursor.description]
     mkt = []
     for r in cursor.fetchall():
-        d = dict(zip(cols, r))
+        d = dict(zip(mkt_cols, r))
         mkt.append({
             "month": d.get("month","")[:7] if d.get("month") else "",
             "index_name": d.get("index_name","Nifty 200"),
-            "open": safe_float(d.get("open")),
-            "high": safe_float(d.get("high")),
-            "low": safe_float(d.get("low")),
+            "open": None,
+            "high": None,
+            "low": None,
             "close": safe_float(d.get("close")),
             "return": safe_float(d.get("return")),
-            "drawdown": safe_float(d.get("drawdown"))
+            "drawdown": safe_float(d.get("drawdown")),
+            "volatility": safe_float(d.get("volatility")),
+            "vix_avg": safe_float(d.get("vix_avg")),
+            "vix_max": safe_float(d.get("vix_max")),
+            "ohlc_note": "month-end close only; this table stores no intraday range"
         })
     write_json("market_index", mkt)
 
     # Macro
     try:
-        cursor.execute("SELECT * FROM macro_monthly ORDER BY month")
-        cols = [d[0] for d in cursor.description]
+        cursor.execute(
+            "SELECT month, monthly_cpi AS cpi, monthly_cpi_inflation AS cpi_inflation, "
+            "monthly_iip AS iip, monthly_iip_growth AS iip_growth, "
+            "monthly_yield AS ten_year_yield, monthly_usd_inr AS usd_inr, "
+            "monthly_crude AS crude_oil, repo_rate, "
+            "monthly_fii_flow AS fii_net, monthly_dii_flow AS dii_net "
+            "FROM macro_monthly ORDER BY month"
+        )
+        mac_cols = [d[0] for d in cursor.description]
         macro = []
         for r in cursor.fetchall():
-            d = dict(zip(cols, r))
+            d = dict(zip(mac_cols, r))
             macro.append({
                 "month": d.get("month","")[:7] if d.get("month") else "",
                 "cpi": safe_float(d.get("cpi")),
+                "cpi_inflation": safe_float(d.get("cpi_inflation")),
+                "iip": safe_float(d.get("iip")),
+                "iip_growth": safe_float(d.get("iip_growth")),
                 "repo_rate": safe_float(d.get("repo_rate")),
                 "ten_year_yield": safe_float(d.get("ten_year_yield")),
                 "usd_inr": safe_float(d.get("usd_inr")),
                 "crude_oil": safe_float(d.get("crude_oil")),
-                "india_vix": safe_float(d.get("india_vix")),
                 "fii_net": safe_float(d.get("fii_net")),
-                "dii_net": safe_float(d.get("dii_net"))
+                "dii_net": safe_float(d.get("dii_net")),
             })
+        # `fii_net` / `dii_net` are null for every row. That is a source gap,
+        # not a broken export: `monthly_fii_flow` and `monthly_dii_flow` hold
+        # zero non-null values in the database, even though the scraped FII/DII
+        # CSV carries `fii_net` and `dii_net` columns. The ingestion step that
+        # built the table did not map them. Publishing them as null without a
+        # note would look like a bug in this exporter, so the cause is stated
+        # here and in the run report instead.
+        if all(row["fii_net"] is None and row["dii_net"] is None for row in macro) and macro:
+            for row in macro:
+                row["flows_note"] = (
+                    "FII/DII flows are null for every month: the database columns "
+                    "monthly_fii_flow and monthly_dii_flow are empty, although the "
+                    "scraped source carries fii_net and dii_net. Ingestion gap, "
+                    "not an export fault."
+                )
         write_json("macro_monthly", macro)
-    except:
+    except Exception:
         write_json("macro_monthly", [])
+
+    # INDIA VIX is a separate index row, not a macro column. It is read from
+    # `market_index_monthly` and merged in by month rather than being asked for
+    # from `macro_monthly`, where no such column has ever existed.
+    vix_by_month: dict[str, float] = {}
+    try:
+        cursor.execute(
+            "SELECT month, vix_avg FROM market_index_monthly "
+            "WHERE UPPER(index_name) LIKE '%VIX%'"
+        )
+        for m, v in cursor.fetchall():
+            if m and v is not None:
+                vix_by_month[str(m)[:7]] = float(v)
+    except Exception:
+        pass
+    for row in macro:
+        row["india_vix"] = safe_float(vix_by_month.get(row["month"]))
+    write_json("macro_monthly", macro)
 
     # Sector index
     try:
-        cursor.execute("SELECT * FROM sector_index_monthly ORDER BY month")
-        cols = [d[0] for d in cursor.description]
+        cursor.execute(
+            "SELECT month, index_name, monthly_close AS close, "
+            "monthly_return AS return, monthly_pe AS pe, monthly_pb AS pb, "
+            "monthly_div_yield AS div_yield, monthly_volatility AS volatility "
+            "FROM sector_index_monthly ORDER BY month"
+        )
+        sec_cols = [d[0] for d in cursor.description]
         sector = []
         for r in cursor.fetchall():
-            d = dict(zip(cols, r))
+            d = dict(zip(sec_cols, r))
             sector.append({
                 "month": d.get("month","")[:7] if d.get("month") else "",
                 "index_name": d.get("index_name",""),
                 "close": safe_float(d.get("close")),
-                "return": safe_float(d.get("return"))
+                "return": safe_float(d.get("return")),
+                "pe": safe_float(d.get("pe")),
+                "pb": safe_float(d.get("pb")),
+                "div_yield": safe_float(d.get("div_yield")),
+                "volatility": safe_float(d.get("volatility")),
             })
         write_json("sector_index", sector)
-    except:
+    except Exception:
         write_json("sector_index", [])
 
     # News features: merge the stored history with the live figures.
@@ -2155,8 +2324,116 @@ def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset(),
     except sqlite3.Error as exc:
         print(f"  WARNING: could not merge historical news features: {exc}")
 
+    # ─── Forward outlook (T+1) and out-of-sample forecast scoring ───
+    #
+    # Built here rather than in its own agent because it needs the artefacts
+    # every earlier node has just produced: the persisted per-sleeve expected
+    # returns, the regime posteriors, the target book, and the factor returns
+    # that supply the realised outcome.
+    _emit_forward_outlook(conn, allocations, regime_preds, diagnostics,
+                          portfolio_targets, decisions)
+
     print(f"[ChartSignalAgent] Done. {len(signal_events)} signals, {len(prices)} price points.")
     return signal_events
+
+
+def _emit_forward_outlook(conn, allocations, regime_preds, diagnostics,
+                          portfolio_targets, decisions):
+    """Write `forward_outlook.json`: the T+1 view plus the accuracy record.
+
+    The accuracy record is the part that matters. A forecast published without
+    its own historical score cannot be checked, so both are written together
+    and the panel reads from the same file.
+    """
+    alloc_by_month = {str(a.get("month"))[:7]: a for a in (allocations or [])}
+    regime_by_month = {str(r.get("month"))[:7]: r for r in (regime_preds or [])}
+    diag_by_month = {str(d.get("month"))[:7]: d for d in (diagnostics or [])}
+    dec_by_month = {str(d.get("month"))[:7]: d for d in (decisions or [])}
+
+    # Realised outcomes: the factor returns the pipeline computed, keyed by the
+    # month they were earned in. This is the comparison target and is never an
+    # input to a forecast.
+    realised: dict[str, dict] = {}
+    fr_path = JSON_DIR / "factor_returns.json"
+    try:
+        if fr_path.exists():
+            for fr in json.load(open(fr_path, encoding="utf-8")):
+                m = str(fr.get("month"))[:7]
+                if m:
+                    realised[m] = fr
+    except Exception as exc:
+        print(f"  Forward outlook: could not read factor returns: {exc}")
+
+    targets_by_month: dict[str, dict] = {}
+    for t in (portfolio_targets or []):
+        m = str(t.get("month"))[:7]
+        if not m:
+            continue
+        targets_by_month.setdefault(m, {})[t.get("symbol")] = {
+            "weight": t.get("target_weight"),
+            "sector": t.get("sector"),
+            "factor_sources": t.get("factor_sources"),
+        }
+
+    # Attach the realised portfolio return to each scored month so the
+    # direction of the headline forecast can be checked as well as the sleeves.
+    for m, fr in realised.items():
+        got = fr.get("portfolio_return")
+        if got is None:
+            a = alloc_by_month.get(m)
+            if a:
+                got = a.get("realised_portfolio_return")
+        fr["portfolio_return"] = got
+
+    forecasts = []
+    for m in sorted(alloc_by_month):
+        a = alloc_by_month[m]
+        # A warm-up month has no regime posterior and no usable expected
+        # return, so there is nothing to forecast. It is skipped rather than
+        # published as a flat 0.0 that would read as a genuine prediction.
+        if a.get("er_momentum") is None and a.get("expected_return") is None:
+            continue
+        if regime_by_month.get(m, {}).get("is_warmup"):
+            continue
+        merged = dict(a)
+        d = dec_by_month.get(m)
+        if d and d.get("decision"):
+            merged["decision"] = d.get("decision")
+        forecasts.append(forward_outlook.build_forecast(
+            merged,
+            regime_by_month.get(m, {}),
+            diag_by_month.get(m, {}),
+            targets_by_month.get(m),
+        ))
+
+    scored = forward_outlook.score_forecasts(forecasts, realised)
+
+    latest = forecasts[-1] if forecasts else None
+    payload = {
+        "generated_for": (latest or {}).get("month"),
+        "latest_forecast": latest,
+        "forecast_history": forecasts,
+        "accuracy": scored,
+        "how_to_read": {
+            "forecast": (
+                "T+1 expected values from the optimiser's own decayed trailing "
+                "window. No outcome month is an input."
+            ),
+            "accuracy": scored.get("interpretation"),
+            "suppression_rule": (
+                "Any accuracy measure with too few observations is reported as "
+                "null with the count that blocked it, rather than as a number "
+                "computed from a handful of months."
+            ),
+            "not_advice": "Research output. Not investment advice.",
+        },
+    }
+    write_json("forward_outlook", payload)
+    if latest:
+        print(f"  Forward outlook for {latest.get('month')}: "
+              f"E[r] {latest.get('expected_portfolio_return')}, "
+              f"vol {latest.get('expected_volatility')}")
+    print(f"  Forecast accuracy: {scored.get('interpretation')}")
 
 # ─── ExplanationAgent ───
 def explanation_agent(validation_report, regime_preds, baskets, factor_returns, diagnostics, allocations, decisions, portfolio_targets, rebalance_trades, bt_portfolio, bt_summary, signal_events):
@@ -2214,7 +2491,10 @@ def explanation_agent(validation_report, regime_preds, baskets, factor_returns, 
     report.append(f"- Chart signal events: {len(signal_events)}\n")
     report.append("\n## Backtest Assumptions\n")
     report.append(f"- Transaction cost: {TX_COST*100:.2f}% per trade side\n")
-    report.append(f"- Backtest months: {len(bt_portfolio)//3}\n")
+    # Count distinct months rather than dividing the point count by a fixed
+    # number of series: the number of strategies is a reporting choice, not a
+    # constant, and hardcoding it silently corrupts this line when one is added.
+    report.append(f"- Backtest months: {len({b['month'] for b in bt_portfolio if b.get('month')})}\n")
     report.append("\n### Performance Summary\n")
     if bt_summary:
         report.append("| Strategy | CAGR | Vol | Sharpe | Max DD | Calmar |\n")
@@ -2310,7 +2590,15 @@ def main():
     bt_portfolio, bt_summary = backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_targets=portfolio_targets)
 
     # Node 9: ChartSignalAgent
-    signal_events = chart_signal_agent(conn, rebalance_trades, baskets, excluded, news_features)
+    # Also emits the forward outlook, which needs the optimiser's persisted
+    # expected returns, the regime posteriors, the target book and the factor
+    # returns that supply the realised outcome.
+    signal_events = chart_signal_agent(
+        conn, rebalance_trades, baskets, excluded, news_features,
+        allocations=allocations, regime_preds=regime_preds,
+        diagnostics=diagnostics, portfolio_targets=portfolio_targets,
+        decisions=decisions,
+    )
 
     # Node 10 was a second RSSNewsAgent call. Removed: it re-fetched the live
     # feeds, produced a different article set from the one the regime model had
