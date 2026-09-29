@@ -1,4 +1,4 @@
-import { Card, StatCard, RegimeBadge, Table, Badge } from "@/components/UI";
+import { Card, StatCard, RegimeBadge, Table } from "@/components/UI";
 import { LineChart, Heatmap, BarChart } from "@/components/Charts";
 import {
   getRegimePredictions,
@@ -6,16 +6,20 @@ import {
   getRegimePerformance,
   formatPercent,
   getRegimeColor,
+  newestFirst,
 } from "@/lib/data";
-import { Gauge, Activity, AlertTriangle, BarChart3 } from "lucide-react";
+import { REGIME_LABELS } from "@/types";
+import { downloadCsv } from "@/lib/csv";
+import { Gauge, Activity, AlertTriangle, BarChart3, Download } from "lucide-react";
 
-const REGIME_LABELS = [
-  "Bull / Expansion",
-  "Bear / Stress",
-  "Sideways / Neutral",
-  "Recovery",
-  "High Volatility / Risk-Off",
-];
+const SHORT_LABEL: Record<string, string> = {
+  "Bull / Expansion": "Bull/Exp",
+  "Bear / Stress": "Bear/Str",
+  "Sideways / Neutral": "Sideways/Neu",
+  Recovery: "Recovery",
+  "High Volatility / Risk-Off": "HighVol/Risk",
+  Unscored: "Unscored",
+};
 
 export function RegimePage() {
   const regimes = getRegimePredictions();
@@ -31,6 +35,8 @@ export function RegimePage() {
   }
 
   const xLabels = regimes.map((r) => r.month);
+  // Diagnostic carried on the newest record only.
+  const separation = [...regimes].reverse().find((r) => r.cluster_separation)?.cluster_separation;
   const probData = [
     { label: "Bull", values: regimes.map((r) => r.prob_bull_expansion) },
     { label: "Bear", values: regimes.map((r) => r.prob_bear_stress) },
@@ -54,9 +60,26 @@ export function RegimePage() {
     })
   );
 
-  const shortLabels = REGIME_LABELS.map((l) =>
-    l.replace(" / ", "/").replace("Expansion", "Exp").replace("Stress", "Str").replace("Neutral", "Neu").replace("Risk-Off", "Risk")
-  );
+  const shortLabels = REGIME_LABELS.map((l) => SHORT_LABEL[l] ?? l);
+
+  const exportRegimes = () =>
+    downloadCsv("regime_history", newestFirst(regimes), [
+      { key: "month" },
+      { key: "regime_label", label: "regime" },
+      { key: "regime_cluster", label: "cluster" },
+      { key: "regime_confidence", label: "confidence" },
+      { key: "transition_risk", label: "transition_risk" },
+      { key: "prob_bull_expansion", label: "prob_bull_expansion" },
+      { key: "prob_bear_stress", label: "prob_bear_stress" },
+      { key: "prob_sideways_neutral", label: "prob_sideways_neutral" },
+      { key: "prob_recovery", label: "prob_recovery" },
+      { key: "prob_high_vol_risk_off", label: "prob_high_vol_risk_off" },
+      { key: "news_sentiment", label: "news_sentiment" },
+      { key: "negative_news_ratio", label: "negative_news_ratio" },
+      { key: "risk_event_count", label: "risk_event_count" },
+      { key: "news_stress_score", label: "news_stress_score" },
+      { key: "model_version", label: "model_version" },
+    ]);
 
   // Regime counts
   const counts: Record<string, number> = {};
@@ -87,16 +110,38 @@ export function RegimePage() {
         <StatCard
           label="Confidence"
           value={formatPercent(latest.regime_confidence)}
-          subvalue={latest.regime_confidence > 0.7 ? "High" : "Moderate"}
+          subvalue={
+            latest.regime_confidence === null
+              ? "No model output"
+              : latest.regime_confidence > 0.7
+              ? "High"
+              : "Moderate"
+          }
           icon={<Activity className="w-5 h-5" />}
-          color={latest.regime_confidence > 0.7 ? "green" : "amber"}
+          color={
+            latest.regime_confidence === null
+              ? "slate"
+              : latest.regime_confidence > 0.7
+              ? "green"
+              : "amber"
+          }
         />
         <StatCard
           label="Transition Risk"
           value={formatPercent(latest.transition_risk)}
-          subvalue={latest.transition_risk > 0.5 ? "Elevated" : "Stable"}
+          subvalue={
+            latest.transition_risk === null
+              ? "No model output"
+              : latest.transition_risk > 0.5
+              ? "Elevated"
+              : "Stable"
+          }
           icon={<AlertTriangle className="w-5 h-5" />}
-          color={latest.transition_risk > 0.5 ? "red" : "green"}
+          color={
+            latest.transition_risk !== null && latest.transition_risk > 0.5
+              ? "red"
+              : "green"
+          }
         />
         <StatCard
           label="Total Months"
@@ -106,6 +151,30 @@ export function RegimePage() {
           color="slate"
         />
       </div>
+
+      {separation && (
+        <div
+          className={`rounded-xl border px-4 py-3 text-sm ${
+            separation.clusters_separate_returns
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-amber-200 bg-amber-50 text-amber-900"
+          }`}
+        >
+          <p className="font-semibold">
+            {separation.clusters_separate_returns
+              ? "Regimes separate forward returns"
+              : "Regimes do not separate forward returns"}
+          </p>
+          <p className="mt-1">
+            Across {separation.observations} scored months, the mean next-month index
+            return differs between the {separation.groups} clusters by F ={" "}
+            {separation.f_statistic} (5% critical ≈ {separation.f_critical_approx}).
+            {separation.clusters_separate_returns
+              ? " That is above the threshold, so the clustering carries some forward-looking information."
+              : " That is below the threshold, so on this sample the regime labels are descriptive groupings rather than a validated forecast. They classify the past; they do not reliably predict the next month."}
+          </p>
+        </div>
+      )}
 
       {/* Probability Chart */}
       <Card title="Regime Probability Timeline" subtitle="GMM cluster probabilities over time">
@@ -175,7 +244,19 @@ export function RegimePage() {
       </div>
 
       {/* Full Regime History */}
-      <Card title="Full Regime History" subtitle="All regime predictions">
+      <Card
+        title="Full Regime History"
+        subtitle={`All regime predictions, newest first (${regimes.length} months)`}
+        action={
+          <button
+            onClick={exportRegimes}
+            className="flex items-center gap-1.5 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50"
+          >
+            <Download className="w-3.5 h-3.5" />
+            Export CSV
+          </button>
+        }
+      >
         <Table
           columns={[
             { key: "month", label: "Month" },
@@ -185,10 +266,13 @@ export function RegimePage() {
             { key: "transition_risk", label: "Trans. Risk", align: "right" },
             { key: "model_version", label: "Model" },
           ]}
-          data={regimes.map((r) => ({
-            ...r,
+          data={newestFirst(regimes).map((r) => ({
+            month: r.month,
+            regime_label: r.regime_label,
+            regime_cluster: r.regime_cluster === null ? "—" : r.regime_cluster,
             regime_confidence: formatPercent(r.regime_confidence),
             transition_risk: formatPercent(r.transition_risk),
+            model_version: r.model_version,
           }))}
           maxHeight="400px"
         />

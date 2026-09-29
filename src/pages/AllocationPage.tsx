@@ -7,13 +7,18 @@ import {
   formatPercent,
   formatNumber,
   getFactorColor,
-  getRegimeColor,
+  newestFirst,
 } from "@/lib/data";
-import { PieChart, TrendingUp, Activity, Target, RotateCw } from "lucide-react";
-import type { FactorName } from "@/types";
+import { TrendingUp, Activity, Target, RotateCw } from "lucide-react";
+import type { FactorName, FactorWeightKey } from "@/types";
 
 const FACTORS: FactorName[] = ["Momentum", "Value", "Quality", "Low Volatility"];
-const FACTOR_KEYS = ["momentum_weight", "value_weight", "quality_weight", "low_volatility_weight"];
+const FACTOR_KEYS: FactorWeightKey[] = [
+  "momentum_weight",
+  "value_weight",
+  "quality_weight",
+  "low_volatility_weight",
+];
 
 export function AllocationPage() {
   const allocations = getFactorAllocations();
@@ -31,7 +36,7 @@ export function AllocationPage() {
   const xLabels = allocations.map((a) => a.month);
   const stackData = FACTORS.map((f, i) => ({
     label: f,
-    values: allocations.map((a) => (a as any)[FACTOR_KEYS[i]]),
+    values: allocations.map((a) => a[FACTOR_KEYS[i]]),
   }));
 
   const expRetData = [
@@ -103,10 +108,10 @@ export function AllocationPage() {
               </div>
               <div className="flex items-center gap-3 flex-1 ml-4">
                 <div className="flex-1">
-                  <ProgressBar value={(latest as any)?.[FACTOR_KEYS[i]] || 0} color={getFactorColor(f)} />
+                  <ProgressBar value={latest?.[FACTOR_KEYS[i]] ?? 0} color={getFactorColor(f)} />
                 </div>
                 <span className="text-sm font-medium text-slate-700 tabular-nums w-14 text-right">
-                  {latest ? formatPercent((latest as any)[FACTOR_KEYS[i]]) : "—"}
+                  {latest ? formatPercent(latest[FACTOR_KEYS[i]]) : "—"}
                 </span>
               </div>
             </div>
@@ -167,7 +172,7 @@ export function AllocationPage() {
             { key: "risk_event_count", label: "Risk Events", align: "right" },
             { key: "news_evidence", label: "News Evidence" },
           ]}
-          data={decisions.map((d) => ({
+          data={newestFirst(decisions).map((d) => ({
             month: d.month,
             decision: <DecisionBadge decision={d.decision} />,
             reason: d.reason,

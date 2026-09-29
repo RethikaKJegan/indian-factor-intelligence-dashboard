@@ -9,12 +9,15 @@ import {
   formatPercent,
   formatNumber,
   getFactorColor,
-  getRegimeColor,
+  getSectorColor,
 } from "@/lib/data";
-import { Briefcase, TrendingUp, RotateCw, Layers, PieChart } from "lucide-react";
+import { Briefcase, TrendingUp, RotateCw } from "lucide-react";
 import type { FactorName } from "@/types";
 
 const FACTORS: FactorName[] = ["Momentum", "Value", "Quality", "Low Volatility"];
+
+/** Sectors shown in the exposure donut; the rest are summarised by omission. */
+const SECTOR_DONUT_SLICE = 8;
 
 export function PortfolioPage() {
   const targets = getPortfolioTargets();
@@ -35,17 +38,14 @@ export function PortfolioPage() {
   const sellCount = trades.filter((t) => t.signal_type === "SELL").length;
   const addCount = trades.filter((t) => t.signal_type === "ADD").length;
   const reduceCount = trades.filter((t) => t.signal_type === "REDUCE").length;
+  // HOLD rows are no-ops, so they are not rebalance events. Every count below
+  // reflects the rows the UI actually shows.
+  const actionableTrades = trades.filter((t) => t.signal_type !== "HOLD");
 
-  const sectorData = sectorExposure.slice(0, 8).map((s) => ({
-    label: s.sector.slice(0, 12),
+  const sectorData = sectorExposure.slice(0, SECTOR_DONUT_SLICE).map((s) => ({
+    label: s.sector,
     value: s.weight,
-    color: getRegimeColor(s.sector),
-  }));
-
-  const factorData = factorExposure.map((f) => ({
-    label: f.factor,
-    value: f.weight,
-    color: getFactorColor(f.factor),
+    color: getSectorColor(s.sector),
   }));
 
   return (
@@ -82,7 +82,7 @@ export function PortfolioPage() {
         />
         <StatCard
           label="Rebalance Count"
-          value={trades.length}
+          value={actionableTrades.length}
           subvalue={`${addCount} ADD, ${reduceCount} REDUCE`}
           icon={<RotateCw className="w-5 h-5" />}
           color="amber"
@@ -100,7 +100,7 @@ export function PortfolioPage() {
               { key: "factor_sources", label: "Factors" },
               { key: "regime_label", label: "Regime" },
             ]}
-            data={targets
+            data={[...targets]
               .sort((a, b) => b.target_weight - a.target_weight)
               .map((t) => ({
                 symbol: t.symbol,
@@ -113,11 +113,18 @@ export function PortfolioPage() {
           />
         </Card>
 
-        <Card title="Sector Exposure" subtitle="Weight by sector">
+        <Card
+          title="Sector Exposure"
+          subtitle={
+            sectorExposure.length > SECTOR_DONUT_SLICE
+              ? `Top ${SECTOR_DONUT_SLICE} of ${sectorExposure.length} sectors by weight`
+              : "Weight by sector"
+          }
+        >
           <DonutChart
             data={sectorData}
             centerLabel="Sectors"
-            centerValue={String(sectorExposure.length)}
+            centerValue={String(sectorData.length)}
           />
         </Card>
       </div>
@@ -153,7 +160,7 @@ export function PortfolioPage() {
           )}
         </Card>
 
-        <Card title="Latest Rebalance Trades" subtitle={`${trades.length} signals this month`}>
+        <Card title="Latest Rebalance Trades" subtitle={`${actionableTrades.length} rebalances this month`}>
           <Table
             columns={[
               { key: "symbol", label: "Symbol" },
@@ -162,8 +169,7 @@ export function PortfolioPage() {
               { key: "new_weight", label: "New", align: "right" },
               { key: "primary_factor", label: "Factor" },
             ]}
-            data={trades
-              .filter((t) => t.signal_type !== "HOLD")
+            data={actionableTrades
               .map((t) => ({
                 symbol: t.symbol,
                 signal_type: <SignalBadge signal={t.signal_type} />,

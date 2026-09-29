@@ -51,14 +51,6 @@ export function StatCard({
   icon?: React.ReactNode;
   color?: "slate" | "blue" | "green" | "red" | "amber" | "purple";
 }) {
-  const colorMap: Record<string, string> = {
-    slate: "bg-slate-50 text-slate-700",
-    blue: "bg-blue-50 text-blue-700",
-    green: "bg-emerald-50 text-emerald-700",
-    red: "bg-red-50 text-red-700",
-    amber: "bg-amber-50 text-amber-700",
-    purple: "bg-purple-50 text-purple-700",
-  };
   const iconBg: Record<string, string> = {
     slate: "bg-slate-100 text-slate-600",
     blue: "bg-blue-100 text-blue-600",
@@ -161,12 +153,19 @@ export function DecisionBadge({ decision }: { decision: string }) {
   return <Badge color={colorMap[decision] || "slate"}>{decision}</Badge>;
 }
 
+/**
+ * A table cell holds already-formatted content: text, numbers, or a rendered
+ * element. `ReactNode` keeps call sites free of `any` while allowing the
+ * badges the pages pass in.
+ */
+type TableRow = Record<string, React.ReactNode>;
+
 interface TableProps {
   columns: { key: string; label: string; align?: "left" | "right" | "center"; width?: string }[];
-  data: Record<string, any>[];
+  data: TableRow[];
   maxHeight?: string;
-  rowKey?: (row: Record<string, any>, idx: number) => string;
-  onRowClick?: (row: Record<string, any>) => void;
+  rowKey?: (row: TableRow, idx: number) => string;
+  onRowClick?: (row: TableRow) => void;
 }
 
 export function Table({

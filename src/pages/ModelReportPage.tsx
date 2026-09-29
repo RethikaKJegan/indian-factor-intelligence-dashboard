@@ -1,6 +1,6 @@
 import { Card, StatCard, Badge, RegimeBadge, DecisionBadge } from "@/components/UI";
-import { getEodRefreshStatus, getLangGraphRunReport, formatNumber, formatPercent } from "@/lib/data";
-import { Activity, AlertTriangle, CheckCircle, DatabaseZap, GitBranch, Newspaper, ShieldCheck } from "lucide-react";
+import { getEodRefreshStatus, getLangGraphRunReport, getUniverseCoverage, formatNumber, formatPercent } from "@/lib/data";
+import { AlertTriangle, CheckCircle, DatabaseZap, GitBranch, Newspaper, ShieldCheck } from "lucide-react";
 
 function valueOrDash(value: unknown) {
   if (value === null || value === undefined || value === "") return "—";
@@ -11,13 +11,20 @@ function valueOrDash(value: unknown) {
 export function ModelReportPage() {
   const report = getLangGraphRunReport();
   const eod = getEodRefreshStatus();
+  const coverage = getUniverseCoverage();
   const snapshot = report.latest_snapshot ?? {};
   const regime = snapshot.latest_regime ?? {};
   const allocation = snapshot.latest_allocation ?? {};
   const decision = snapshot.latest_decision ?? {};
   const news = snapshot.latest_news_features ?? {};
   const warningCount = report.warnings?.length ?? 0;
-  const groqOk = report.llm_explanation && !report.llm_explanation.toLowerCase().includes("fallback");
+  // The pipeline records why no explanation was produced (no API key, skipped
+  // run, request failure) rather than always omitting the field, so a
+  // placeholder message must not be reported as a successful API response.
+  const llmText = (report.llm_explanation ?? "").toLowerCase();
+  const groqOk =
+    llmText.length > 0 &&
+    !/fallback|skipped|not configured|unavailable|error|failed/.test(llmText);
   const eodOk = eod.status === "ok";
 
   const allocationRows = [
@@ -80,6 +87,50 @@ export function ModelReportPage() {
           {eod.message}
         </div>
       </Card>
+
+      {coverage && (
+        <Card
+          title="Index Coverage"
+          subtitle={`${coverage.modeling_universe_size} of ${coverage.index_size} ${coverage.index_name} symbols are usable for modeling`}
+        >
+          {coverage.excluded_count === 0 ? (
+            <p className="text-sm text-emerald-700">
+              Every {coverage.index_name} symbol has the data depth the factor set requires.
+            </p>
+          ) : (
+            <>
+              <p className="text-sm text-slate-600">
+                {coverage.excluded_count} symbol{coverage.excluded_count === 1 ? "" : "s"} cannot be
+                modeled from the upstream NSE sources. They are dropped rather than filled with
+                imputed values, so no figure on this dashboard is estimated.
+              </p>
+              <div className="mt-3 overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wider text-slate-500">
+                      <th className="py-2 pr-4">Symbol</th>
+                      <th className="py-2">Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(coverage.excluded_symbols).map(([symbol, reason]) => (
+                      <tr key={symbol} className="border-b border-slate-100">
+                        <td className="py-2 pr-4 font-medium text-slate-700">{symbol}</td>
+                        <td className="py-2 text-slate-600">{reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-xs text-slate-500">
+                Minimum required: {coverage.min_price_months_required} months of price history and{" "}
+                {coverage.min_fundamental_months_required} months of fundamentals. A symbol is
+                restored automatically on the next pipeline run once its source data catches up.
+              </p>
+            </>
+          )}
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
         <Card title="Latest Decision Snapshot" subtitle="Final state passed out of the graph">

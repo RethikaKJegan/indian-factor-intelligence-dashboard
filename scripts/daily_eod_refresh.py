@@ -35,6 +35,7 @@ from urllib.error import HTTPError, URLError
 import numpy as np
 import pandas as pd
 
+import universe as universe_policy
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
@@ -46,7 +47,10 @@ STATUS_PATH = JSON_DIR / "eod_refresh_status.json"
 
 CUTOFF_NEW_BHAVCOPY = dt.date(2024, 7, 8)
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/123 Safari/537.36"
-EXCLUDED = {"ENRIN", "GROWW", "HDFCLIFE", "ICICIAMC", "ICICIGI", "LENSKART", "LGEINDIA", "MCX", "SBILIFE", "TATACAP", "TMCV"}
+
+# Symbols the EOD refresh must not write, derived from the same measured
+# data-depth policy the main pipeline uses. See universe.py.
+EXCLUDED = set(universe_policy.BASELINE_EXCLUSIONS)
 
 INDEX_API_URL = "https://www.niftyindices.com/Backpage.aspx/getHistoricaldatatabletoString"
 INDEX_PAGE_URL = "https://www.niftyindices.com/reports/historical-data"

@@ -10,6 +10,7 @@ import { BacktestPage } from "@/pages/BacktestPage";
 import { NewsPage } from "@/pages/NewsPage";
 import { SimulationPage } from "@/pages/SimulationPage";
 import { ModelReportPage } from "@/pages/ModelReportPage";
+import { ModelIntegrityPage } from "@/pages/ModelIntegrityPage";
 import { loadDashboardData } from "@/lib/data";
 
 function App() {
@@ -67,6 +68,7 @@ function App() {
       {page === "news" && <NewsPage />}
       {page === "simulation" && <SimulationPage />}
       {page === "model-report" && <ModelReportPage />}
+      {page === "integrity" && <ModelIntegrityPage />}
     </Layout>
   );
 }

@@ -1,4 +1,4 @@
-import { Card, StatCard, Table, Badge } from "@/components/UI";
+import { Card, StatCard, Table } from "@/components/UI";
 import { LineChart, BarChart, Heatmap } from "@/components/Charts";
 import {
   getTopStocksByFactor,
@@ -7,12 +7,19 @@ import {
   getFactorDiagnostics,
   formatPercent,
   formatNumber,
-  getFactorColor,
 } from "@/lib/data";
 import { Layers, TrendingUp, Activity, Grid3x3 } from "lucide-react";
-import type { FactorName } from "@/types";
+import type { FactorName, FactorReturnMetric } from "@/types";
 
 const FACTORS: FactorName[] = ["Momentum", "Value", "Quality", "Low Volatility"];
+
+/** Monthly-return field on FactorReturn, keyed positionally to FACTORS. */
+const FACTOR_RETURN_KEYS: FactorReturnMetric[] = [
+  "momentum_return",
+  "value_return",
+  "quality_return",
+  "low_volatility_return",
+];
 
 export function FactorPage() {
   const factorReturns = getFactorReturns();
@@ -35,41 +42,40 @@ export function FactorPage() {
     { label: "Low Vol", values: factorReturns.map((f) => f.low_volatility_return) },
   ];
 
-  // Cumulative returns
+  // Cumulative growth of 1 unit of capital, compounded monthly.
   const cumData = FACTORS.map((f, i) => {
-    const key = ["momentum_return", "value_return", "quality_return", "low_volatility_return"][i];
-    let cum = 0;
+    const key = FACTOR_RETURN_KEYS[i];
+    let cum = 1;
     return {
       label: f,
       values: factorReturns.map((fr) => {
-        cum *= 1 + (fr as any)[key];
-        cum += (fr as any)[key];
+        cum *= 1 + fr[key];
         return cum;
       }),
     };
   });
 
-  // Correlation matrix
-  let corrMatrix: number[][] = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1]];
-  let corrLabels = ["Mom", "Val", "Qual", "LowVol"];
+  // Correlation matrix. Missing cells stay null and render as an em dash; a
+  // placeholder identity matrix would read as "these factors are perfectly
+  // uncorrelated", which is a claim the data does not support.
+  const corrLabels = ["Mom", "Val", "Qual", "LowVol"];
+  let corrMatrix: (number | null)[][] = [];
   if (latestDiag?.correlation_matrix) {
     const cm = latestDiag.correlation_matrix;
     const keys = ["momentum", "value", "quality", "low_volatility"];
-    corrMatrix = keys.map((k1) => keys.map((k2) => cm[k1]?.[k2] ?? 0));
+    corrMatrix = keys.map((k1) => keys.map((k2) => cm[k1]?.[k2] ?? null));
   }
 
-  // Risk diagnostics
-  const riskData = allDiag.map((d) => ({
-    label: d.month,
-    value: d.redundancy_score,
-    color: "#f59e0b",
-  }));
-
-  const effFactorsData = allDiag.map((d) => ({
-    label: d.month,
-    value: d.effective_independent_factors,
-    color: "#3b82f6",
-  }));
+  // Risk diagnostics. Redundancy is null for months whose regime had too few
+  // observations to estimate it, so those months are dropped from the chart
+  // rather than being drawn as a zero that looks like "no redundancy".
+  const riskData = allDiag
+    .filter((d): d is typeof d & { redundancy_score: number } => d.redundancy_score !== null)
+    .map((d) => ({
+      label: d.month,
+      value: d.redundancy_score,
+      color: "#f59e0b",
+    }));
 
   return (
     <div className="space-y-6">
@@ -128,13 +134,26 @@ export function FactorPage() {
 
       {/* Diagnostics */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card title="Factor Correlation Matrix" subtitle="Latest month inter-factor correlations">
-          <Heatmap
-            rows={corrLabels}
-            cols={corrLabels}
-            values={corrMatrix}
-            cellFormat={(v) => v.toFixed(2)}
-          />
+        <Card
+          title="Factor Correlation Matrix"
+          subtitle={
+            latestDiag
+              ? `Inter-factor correlations — ${latestDiag.month} (${latestDiag.observation_count} observations)`
+              : "Inter-factor correlations"
+          }
+        >
+          {corrMatrix.length > 0 ? (
+            <Heatmap
+              rows={corrLabels}
+              cols={corrLabels}
+              values={corrMatrix}
+              cellFormat={(v) => v.toFixed(2)}
+            />
+          ) : (
+            <p className="text-sm text-slate-500">
+              Not enough observations in this regime to estimate a correlation matrix.
+            </p>
+          )}
         </Card>
 
         <div className="space-y-6">

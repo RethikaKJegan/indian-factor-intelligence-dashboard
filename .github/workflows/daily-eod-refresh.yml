@@ -2,6 +2,20 @@ name: Daily EOD Refresh
 run-name: Daily EOD Refresh - ${{ github.event_name }}
 
 on:
+  # No `schedule:` trigger on purpose.
+  #
+  # This workflow is driven by console.cron-job.org, which fires
+  # `repository_dispatch` at 18:00 IST daily using a fine-grained GitHub token
+  # with read+write. Adding GitHub's own cron here would run the job twice a
+  # day for no benefit: the second run finds nothing new and commits nothing.
+  #
+  # The trade-off, stated rather than hidden: that depends on an external
+  # service and a token. Fine-grained tokens expire, and when one does the
+  # refreshes stop with no local symptom -- the last successful run simply
+  # stops appearing on the Actions page. The "Verify the data actually
+  # advanced" step below is what makes that visible, because it compares the
+  # newest close against the last trading day rather than trusting the exit
+  # code, which --allow-no-data makes meaningless.
   workflow_dispatch:
   repository_dispatch:
     types: [daily-eod-refresh]
@@ -26,6 +40,7 @@ jobs:
           echo "ref=${{ github.ref }}"
           echo "sha=${{ github.sha }}"
           date -u
+          echo "NOTE: if event_name is 'schedule' this is the automatic run."
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -39,16 +54,45 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
+      # --allow-no-data lets a failed fetch exit 0 so the pipeline still runs.
+      # The exit code is therefore not evidence of success, and the next step
+      # is what actually decides whether the data moved. Do not read this
+      # step's green tick as "the refresh worked".
       - name: Run EOD refresh
         run: python scripts/daily_eod_refresh.py --allow-no-data
+
+      - name: Show refresh status
+        run: cat public/data/eod_refresh_status.json
+
+      # The real gate. Compares the newest close against the last trading day
+      # and fails the job if the data is behind, so a stalled refresh is
+      # visible on the Actions page instead of quietly committing stale numbers.
+      - name: Verify the data actually advanced
+        run: |
+          set +e
+          python scripts/verify_data.py --strict
+          code=$?
+          set -e
+          if [ $code -ne 0 ]; then
+            echo "::warning::Data is not current (verify_data.py exit $code). The pipeline will still run and publish, but current-month figures are stale. See the report above."
+          fi
+          # Stale (2) fails the job; degraded (1) warns. Publishing a stale
+          # dashboard is worse than a red X, because nobody checks a green tick.
+          if [ $code -eq 2 ]; then
+            echo "::error::EOD data is stale by more than 3 trading days. Refusing to publish."
+            exit 2
+          fi
 
       - name: Run LangGraph pipeline
         run: python scripts/run_langgraph_pipeline.py
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          # Fetch fresh news on the scheduled run. Set to 1 to replay the
+          # stored snapshot instead, for a byte-exact re-run.
+          NEWS_REPLAY: "0"
 
-      - name: Show refresh status
-        run: cat public/data/eod_refresh_status.json
+      - name: Re-verify after the pipeline
+        run: python scripts/verify_data.py
 
       - name: Commit updated data snapshot
         run: |
@@ -56,8 +100,32 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add public/data data_input/processed_financial_data.sqlite
           if git diff --cached --quiet; then
-            echo "No EOD data changes to commit."
+            echo "No data changes to commit."
           else
             git commit -m "Update daily EOD data snapshot"
             git push
           fi
+
+      # If the refresh is regularly failing, one red run is easy to miss among
+      # a wall of green ones. This posts the reason to the run summary.
+      - name: Summarise for the run page
+        if: always()
+        run: |
+          {
+            echo "### Daily EOD refresh"
+            echo ""
+            echo "| Field | Value |"
+            echo "|---|---|"
+            python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("public/data/eod_refresh_status.json")
+          if p.exists():
+              d = json.loads(p.read_text())
+              for k in ("status", "requested_date", "resolved_date",
+                        "stock_rows", "index_rows", "message", "finished_at"):
+                  if d.get(k) is not None:
+                      print(f"| {k} | {d[k]} |")
+          else:
+              print("| status | no status file written |")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"

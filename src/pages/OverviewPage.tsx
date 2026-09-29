@@ -1,15 +1,14 @@
-import { Card, StatCard, RegimeBadge, DecisionBadge, Badge, Table, ProgressBar } from "@/components/UI";
+import { Card, StatCard, RegimeBadge, DecisionBadge, Table, ProgressBar } from "@/components/UI";
 import { DonutChart, LineChart } from "@/components/Charts";
 import {
   getOverviewData,
   getRegimePredictions,
   getBacktestSummary,
   getBacktestPortfolio,
-  getLatestAllocation,
   formatPercent,
   formatNumber,
-  getRegimeColor,
   getFactorColor,
+  newestFirst,
 } from "@/lib/data";
 import { Gauge, TrendingUp, Shield, Target, Activity, AlertTriangle, Briefcase, BarChart3 } from "lucide-react";
 import type { FactorName } from "@/types";
@@ -19,7 +18,6 @@ export function OverviewPage() {
   const regimes = getRegimePredictions();
   const summaries = getBacktestSummary();
   const btPortfolio = getBacktestPortfolio();
-  const latestAlloc = getLatestAllocation();
 
   if (!overview) {
     return (
@@ -32,10 +30,6 @@ export function OverviewPage() {
     );
   }
 
-  const dynSummary = summaries.find((s) => s.strategy_name === "Dynamic Regime Factor Allocation");
-  const benchSummary = summaries.find((s) => s.strategy_name === "Nifty 200 Buy & Hold");
-  const staticSummary = summaries.find((s) => s.strategy_name === "Static 25/25/25/25");
-
   const factorAllocData = (Object.entries(overview.factor_allocations) as [FactorName, number][])
     .map(([factor, weight]) => ({
       label: factor,
@@ -47,7 +41,8 @@ export function OverviewPage() {
   const benchCurve = btPortfolio.filter((b) => b.strategy_name === "Nifty 200 Buy & Hold");
   const xLabels = equityCurve.map((b) => b.month);
 
-  const recentRegimes = regimes.slice(-12);
+  // Newest first, so the current month is the top row.
+  const recentRegimes = newestFirst(regimes).slice(0, 12);
 
   return (
     <div className="space-y-6">
@@ -77,9 +72,15 @@ export function OverviewPage() {
         <StatCard
           label="Transition Risk"
           value={formatPercent(overview.transition_risk)}
-          subvalue={overview.transition_risk > 0.5 ? "Elevated" : "Low"}
+          subvalue={
+            overview.transition_risk === null
+              ? "No model output"
+              : overview.transition_risk > 0.5
+              ? "Elevated"
+              : "Low"
+          }
           icon={<AlertTriangle className="w-5 h-5" />}
-          color={overview.transition_risk > 0.5 ? "red" : "green"}
+          color={overview.transition_risk !== null && overview.transition_risk > 0.5 ? "red" : "green"}
         />
         <StatCard
           label="Portfolio Stocks"
@@ -177,7 +178,8 @@ export function OverviewPage() {
               { key: "transition_risk", label: "Trans. Risk", align: "right" },
             ]}
             data={recentRegimes.map((r) => ({
-              ...r,
+              month: r.month,
+              regime_label: r.regime_label,
               regime_confidence: formatPercent(r.regime_confidence),
               transition_risk: formatPercent(r.transition_risk),
             }))}

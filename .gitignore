@@ -29,6 +29,12 @@ daily_update.log
 model_run_report.md
 langgraph_run_report.md
 
+# News snapshot: the exact RSS article set a run used. Regenerated on every
+# live fetch, so committing it would add a daily diff of thousands of
+# articles for no benefit. Its SHA-256 is recorded in experiment_manifest.json
+# instead, which is what reproducibility actually needs.
+data_input/news_snapshot.json
+
 # Python cache
 __pycache__/
 *.py[cod]

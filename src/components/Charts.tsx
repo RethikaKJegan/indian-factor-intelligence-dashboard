@@ -1,7 +1,12 @@
 import React from "react";
 
 interface LineChartProps {
-  data: { label: string; values: number[] }[];
+  /**
+   * `null` marks a point with no value, such as a month the model could not
+   * score. Gaps break the line rather than being drawn as zero, and are
+   * excluded from the axis range.
+   */
+  data: { label: string; values: (number | null)[] }[];
   xLabels: string[];
   height?: number;
   yFormat?: (v: number) => string;
@@ -33,7 +38,12 @@ export function LineChart({
     );
   }
 
-  const allValues = data.flatMap((d) => d.values).filter((v) => v != null);
+  // Must match the guard used when plotting individual points below: a NaN or
+  // missing value that survives the scale computation would collapse the whole
+  // chart. The predicate narrows to `number` so the axis maths stays typed.
+  const allValues = data
+    .flatMap((d) => d.values)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
   if (allValues.length === 0) {
     return (
       <div
@@ -48,8 +58,12 @@ export function LineChart({
   const minY = Math.min(...allValues);
   const maxY = Math.max(...allValues);
   const yRange = maxY - minY || 1;
+  // Pad by 10% of the range, but never past 0 for a series that only contains
+  // non-negative values (probabilities, weights, counts). Padding a 0..1
+  // probability axis produced a "-10% to 110%" scale, which reads as if
+  // negative probabilities were possible.
   const yPad = yRange * 0.1;
-  const yMin = minY - yPad;
+  const yMin = minY >= 0 ? Math.max(0, minY - yPad) : minY - yPad;
   const yMax = maxY + yPad;
 
   const xStep = chartW / Math.max(1, xLabels.length - 1);
@@ -118,26 +132,37 @@ export function LineChart({
         {/* Lines */}
         {data.map((series, si) => {
           const color = chartColors[si % chartColors.length];
-          const points = series.values
-            .map((v, i) => {
-              if (v == null || isNaN(v)) return null;
-              const x = pad.left + i * xStep;
-              const y =
-                pad.top + chartH - ((v - yMin) / (yMax - yMin)) * chartH;
-              return `${x},${y}`;
-            })
-            .filter(Boolean)
-            .join(" ");
+          // Build one polyline per run of consecutive present values so a
+          // `null` breaks the line. Joining across a gap would imply the
+          // series interpolated through a period it never measured.
+          const segments: string[][] = [];
+          let current: string[] = [];
+          series.values.forEach((v, i) => {
+            if (v == null || isNaN(v)) {
+              if (current.length > 0) segments.push(current);
+              current = [];
+              return;
+            }
+            const x = pad.left + i * xStep;
+            const y =
+              pad.top + chartH - ((v - yMin) / (yMax - yMin)) * chartH;
+            current.push(`${x},${y}`);
+          });
+          if (current.length > 0) segments.push(current);
+
           return (
             <g key={si}>
-              <polyline
-                points={points}
-                fill="none"
-                stroke={color}
-                strokeWidth={2}
-                strokeLinejoin="round"
-                strokeLinecap="round"
-              />
+              {segments.map((seg, k) => (
+                <polyline
+                  key={k}
+                  points={seg.join(" ")}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={2}
+                  strokeLinejoin="round"
+                  strokeLinecap="round"
+                />
+              ))}
             </g>
           );
         })}
@@ -163,14 +188,12 @@ interface BarChartProps {
   data: { label: string; value: number; color?: string }[];
   height?: number;
   yFormat?: (v: number) => string;
-  horizontal?: boolean;
 }
 
 export function BarChart({
   data,
   height = 300,
   yFormat = (v) => v.toFixed(2),
-  horizontal = false,
 }: BarChartProps) {
   const width = 800;
   const pad = { top: 20, right: 20, bottom: 40, left: 60 };
@@ -352,7 +375,9 @@ export function DonutChart({
 interface HeatmapProps {
   rows: string[];
   cols: string[];
-  values: number[][];
+  /** `null` marks a cell with no data, which renders as an em dash. Zero is a
+   *  real value and is rendered and coloured normally. */
+  values: (number | null)[][];
   colorScale?: (v: number) => string;
   cellFormat?: (v: number) => string;
 }

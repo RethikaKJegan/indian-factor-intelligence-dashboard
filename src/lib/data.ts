@@ -27,7 +27,15 @@ import type {
   SignalType,
   LangGraphRunReport,
   EodRefreshStatus,
+  SectorIndexPoint,
+  RegimeLabel,
+  UniverseCoverage,
+  PerformanceReport,
+  CostScenarioTable,
+  PortfolioConstraintCompliance,
+  ExperimentManifest,
 } from "@/types";
+import { REGIME_LABELS } from "@/types";
 
 let regimes: RegimePrediction[] = [];
 let baskets: FactorBasketEntry[] = [];
@@ -46,7 +54,7 @@ let macro: MacroPoint[] = [];
 let newsFeatures: NewsFeature[] = [];
 let newsDailyFeatures: NewsDailyFeature[] = [];
 let newsArticles: NewsArticle[] = [];
-let sectorIndex: any[] = [];
+let sectorIndex: SectorIndexPoint[] = [];
 let stocks: StockMeta[] = [];
 let dataInventory: DataInventory[] = [];
 let langGraphRunReport: LangGraphRunReport = {
@@ -68,9 +76,17 @@ let eodRefreshStatus: EodRefreshStatus = {
   started_at: null,
   finished_at: null,
 };
+let universeCoverage: UniverseCoverage | null = null;
+let performanceReport: PerformanceReport | null = null;
+let costScenarios: CostScenarioTable | null = null;
+let constraintCompliance: PortfolioConstraintCompliance | null = null;
+let experimentManifest: ExperimentManifest | null = null;
 let dashboardDataLoaded = false;
 
 const DATA_BASE = "/data";
+
+/** Backtest strategy whose performance the dashboard reports as its own. */
+export const DYNAMIC_STRATEGY = "Dynamic Regime Factor Allocation";
 
 async function fetchDataFile<T>(name: string): Promise<T> {
   const res = await fetch(`${DATA_BASE}/${name}.json`, { cache: "no-cache" });
@@ -78,6 +94,19 @@ async function fetchDataFile<T>(name: string): Promise<T> {
     throw new Error(`Failed to load ${name}.json (${res.status})`);
   }
   return res.json() as Promise<T>;
+}
+
+/**
+ * Optional companion file: absent until the pipeline has been re-run since
+ * universe coverage was added. A missing file must not fail the whole
+ * dashboard, so the caller decides how to present the gap.
+ */
+async function fetchOptionalDataFile<T>(name: string): Promise<T | null> {
+  try {
+    return await fetchDataFile<T>(name);
+  } catch {
+    return null;
+  }
 }
 
 export async function loadDashboardData(): Promise<void> {
@@ -104,6 +133,11 @@ export async function loadDashboardData(): Promise<void> {
     dataInventoryJson,
     langGraphJson,
     eodStatusJson,
+    universeCoverageJson,
+    performanceReportJson,
+    costScenariosJson,
+    constraintComplianceJson,
+    experimentManifestJson,
   ] = await Promise.all([
     fetchDataFile<RegimePrediction[]>("regime_predictions"),
     fetchDataFile<FactorBasketEntry[]>("factor_baskets"),
@@ -122,11 +156,18 @@ export async function loadDashboardData(): Promise<void> {
     fetchDataFile<NewsFeature[]>("news_features"),
     fetchDataFile<NewsDailyFeature[]>("news_features_daily"),
     fetchDataFile<NewsArticle[]>("news_articles_raw"),
-    fetchDataFile<any[]>("sector_index"),
+    fetchDataFile<SectorIndexPoint[]>("sector_index"),
     fetchDataFile<StockMeta[]>("stocks"),
     fetchDataFile<DataInventory[]>("data_inventory"),
     fetchDataFile<LangGraphRunReport>("langgraph_run_report"),
     fetchDataFile<EodRefreshStatus>("eod_refresh_status"),
+    fetchOptionalDataFile<UniverseCoverage>("universe_coverage"),
+    fetchOptionalDataFile<PerformanceReport>("backtest_performance_report"),
+    fetchOptionalDataFile<CostScenarioTable>("backtest_cost_scenarios"),
+    fetchOptionalDataFile<PortfolioConstraintCompliance>(
+      "portfolio_constraint_compliance",
+    ),
+    fetchOptionalDataFile<ExperimentManifest>("experiment_manifest"),
   ]);
 
   regimes = regimesJson;
@@ -151,6 +192,11 @@ export async function loadDashboardData(): Promise<void> {
   dataInventory = dataInventoryJson;
   langGraphRunReport = langGraphJson;
   eodRefreshStatus = eodStatusJson;
+  universeCoverage = universeCoverageJson;
+  performanceReport = performanceReportJson;
+  costScenarios = costScenariosJson;
+  constraintCompliance = constraintComplianceJson;
+  experimentManifest = experimentManifestJson;
   dashboardDataLoaded = true;
 }
 
@@ -191,10 +237,21 @@ export function getFactorDiagnostics(): FactorDiagnostics[] {
   return factorDiagnostics;
 }
 
+/**
+ * The most recent month whose diagnostics could actually be estimated.
+ *
+ * The newest month is not necessarily usable: a regime with only one or two
+ * months in the expanding window has no estimable correlation or redundancy,
+ * and those fields are null. Returning the last month with real values keeps
+ * the diagnostics cards populated with measured figures instead of a row of
+ * em dashes, while {@link getFactorDiagnostics} still exposes every month.
+ */
 export function getLatestDiagnostics(): FactorDiagnostics | null {
-  return factorDiagnostics.length > 0
-    ? factorDiagnostics[factorDiagnostics.length - 1]
-    : null;
+  for (let i = factorDiagnostics.length - 1; i >= 0; i--) {
+    const d = factorDiagnostics[i];
+    if (d.redundancy_score !== null && d.correlation_matrix) return d;
+  }
+  return factorDiagnostics.length > 0 ? factorDiagnostics[factorDiagnostics.length - 1] : null;
 }
 
 export function getFactorAllocations(): FactorAllocation[] {
@@ -290,7 +347,7 @@ export function getNewsArticlesByMonth(month: string, limit = 12): NewsArticle[]
   return getNewsArticles().filter((a) => a.month === month).slice(0, limit);
 }
 
-export function getSectorIndex(): any[] {
+export function getSectorIndex(): SectorIndexPoint[] {
   return sectorIndex;
 }
 
@@ -306,24 +363,68 @@ export function getEodRefreshStatus(): EodRefreshStatus {
   return eodRefreshStatus;
 }
 
+/**
+ * Index coverage and the reason each unusable symbol was dropped, or `null`
+ * when the pipeline output predates this file.
+ */
+export function getUniverseCoverage(): UniverseCoverage | null {
+  return universeCoverage;
+}
+
+/**
+ * Extended risk metrics, benchmark-relative statistics and bootstrap
+ * confidence intervals for the stock-level book, or `null` when the pipeline
+ * output predates this file.
+ */
+export function getPerformanceReport(): PerformanceReport | null {
+  return performanceReport;
+}
+
+/** Cost sensitivity ladder: the book re-run at 0/10/20/50/100 bps. */
+export function getCostScenarios(): CostScenarioTable | null {
+  return costScenarios;
+}
+
+/** Position and sector cap compliance, month by month. */
+export function getConstraintCompliance(): PortfolioConstraintCompliance | null {
+  return constraintCompliance;
+}
+
+/**
+ * What the most recent pipeline run consumed, assumed, and could not support.
+ * `null` when the output predates the manifest.
+ */
+export function getExperimentManifest(): ExperimentManifest | null {
+  return experimentManifest;
+}
+
 export function getOverviewData(): OverviewData | null {
   const latestRegime = getLatestRegime();
   const latestAlloc = getLatestAllocation();
   const latestDec = getLatestDecision();
   const summaries = getBacktestSummary();
   const dynSummary = summaries.find(
-    (s) => s.strategy_name === "Dynamic Regime Factor Allocation"
+    (s) => s.strategy_name === DYNAMIC_STRATEGY
   );
   const targets = getPortfolioTargets();
 
   if (!latestRegime || !latestAlloc) return null;
 
+  // The backtest series interleaves one row per strategy per month, so the
+  // final element belongs to whichever strategy was written last (the
+  // benchmark). Select the dynamic strategy's own latest row explicitly.
+  const latestDynamic = backtestPortfolio
+    .filter((b) => b.strategy_name === DYNAMIC_STRATEGY)
+    .slice(-1)[0];
+
   return {
     latest_month: latestRegime.month,
     regime_label: latestRegime.regime_label,
+    // Warm-up months carry no model output; the UI renders an em dash rather
+    // than a fabricated 0%.
     regime_confidence: latestRegime.regime_confidence,
     transition_risk: latestRegime.transition_risk,
-    latest_decision: latestDec?.decision ?? ("RETAIN" as any),
+    latest_decision: latestDec?.decision ?? "RETAIN",
     decision_reason: latestDec?.reason ?? "",
     factor_allocations: {
       Momentum: latestAlloc.momentum_weight,
@@ -334,10 +435,7 @@ export function getOverviewData(): OverviewData | null {
     portfolio_value: dynSummary?.total_return
       ? 100 * (1 + dynSummary.total_return)
       : 100,
-    monthly_return:
-      backtestPortfolio.length > 0
-        ? backtestPortfolio[backtestPortfolio.length - 1].monthly_return
-        : 0,
+    monthly_return: latestDynamic?.monthly_return ?? 0,
     max_drawdown: dynSummary?.max_drawdown ?? 0,
     sharpe: dynSummary?.sharpe ?? 0,
     cagr: dynSummary?.cagr ?? 0,
@@ -360,22 +458,15 @@ export function getRegimeTransitionMatrix(): RegimeTransitionCell[] {
     regimeCounts[from] = (regimeCounts[from] || 0) + 1;
   }
 
-  const labels = [
-    "Bull / Expansion",
-    "Bear / Stress",
-    "Sideways / Neutral",
-    "Recovery",
-    "High Volatility / Risk-Off",
-  ];
   const cells: RegimeTransitionCell[] = [];
-  for (const from of labels) {
-    for (const to of labels) {
+  for (const from of REGIME_LABELS) {
+    for (const to of REGIME_LABELS) {
       const key = `${from}|${to}`;
       const count = transitions[key] || 0;
       const total = regimeCounts[from] || 0;
       cells.push({
-        from_regime: from as any,
-        to_regime: to as any,
+        from_regime: from,
+        to_regime: to,
         count,
         probability: total > 0 ? count / total : 0,
       });
@@ -386,17 +477,17 @@ export function getRegimeTransitionMatrix(): RegimeTransitionCell[] {
 
 export function getRegimePerformance(): RegimePerformance[] {
   const btDyn = backtestPortfolio.filter(
-    (b) => b.strategy_name === "Dynamic Regime Factor Allocation"
+    (b) => b.strategy_name === DYNAMIC_STRATEGY
   );
-  const byRegime: Record<string, number[]> = {};
+  const byRegime: Partial<Record<RegimeLabel, number[]>> = {};
   for (const b of btDyn) {
     if (!byRegime[b.regime_label]) byRegime[b.regime_label] = [];
-    byRegime[b.regime_label].push(b.monthly_return);
+    byRegime[b.regime_label]!.push(b.monthly_return);
   }
   const result: RegimePerformance[] = [];
-  for (const [label, rets] of Object.entries(byRegime)) {
+  for (const [label, rets] of Object.entries(byRegime) as [RegimeLabel, number[]][]) {
     result.push({
-      regime_label: label as any,
+      regime_label: label,
       avg_return: rets.reduce((a, b) => a + b, 0) / rets.length,
       freq: rets.length,
       best_month: Math.max(...rets),
@@ -497,12 +588,46 @@ export function getFactorColor(factor: string): string {
   }
 }
 
-export function formatPercent(v: number, digits = 2): string {
+/**
+ * Distinct palette for sector slices. Sectors are an open set, so colours are
+ * assigned by a stable hash of the sector name rather than by a fixed lookup:
+ * the same sector keeps the same colour across renders and across the top-N
+ * slice, while different sectors rarely collide.
+ */
+const SECTOR_PALETTE = [
+  "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899",
+  "#14b8a6", "#f97316", "#6366f1", "#84cc16", "#06b6d4",
+  "#a855f7", "#ef4444", "#22c55e", "#eab308", "#0ea5e9",
+  "#d946ef",
+];
+
+export function getSectorColor(sector: string): string {
+  let hash = 0;
+  for (let i = 0; i < sector.length; i++) {
+    hash = (hash * 31 + sector.charCodeAt(i)) >>> 0;
+  }
+  return SECTOR_PALETTE[hash % SECTOR_PALETTE.length];
+}
+
+/**
+ * Most recent first.
+ *
+ * History tables read newest-to-oldest because the newest row is the one the
+ * reader is looking for. The pipeline emits ascending order, so every such
+ * table reverses a copy rather than the stored array.
+ */
+export function newestFirst<T extends { month: string }>(rows: T[]): T[] {
+  return [...rows].sort((a, b) => b.month.localeCompare(a.month));
+}
+
+/** Formats a ratio as a percentage; `null` renders as an em dash, not 0%. */
+export function formatPercent(v: number | null | undefined, digits = 2): string {
   if (v === null || v === undefined || isNaN(v)) return "—";
   return `${(v * 100).toFixed(digits)}%`;
 }
 
-export function formatNumber(v: number, digits = 2): string {
+/** Formats a number to `digits`; `null` renders as an em dash, not 0. */
+export function formatNumber(v: number | null | undefined, digits = 2): string {
   if (v === null || v === undefined || isNaN(v)) return "—";
   return v.toFixed(digits);
 }

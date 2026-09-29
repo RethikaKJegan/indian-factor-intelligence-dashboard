@@ -36,6 +36,17 @@ export function SignalsPage() {
     [symbols, search]
   );
 
+  // A controlled <select> whose value is missing from its own options renders
+  // blank, so keep the current selection listed even when the search filter
+  // excludes it. Otherwise the chart below shows a symbol absent from the list.
+  const symbolOptions = useMemo(
+    () =>
+      filteredSymbols.includes(selectedSymbol) || !selectedSymbol
+        ? filteredSymbols
+        : [selectedSymbol, ...filteredSymbols],
+    [filteredSymbols, selectedSymbol]
+  );
+
   const prices = getStockPrices(selectedSymbol);
   const signals = getSignalEvents(selectedSymbol);
   const months = useMemo(
@@ -102,10 +113,17 @@ export function SignalsPage() {
           </div>
           <select
             value={selectedSymbol}
-            onChange={(e) => setSelectedSymbol(e.target.value)}
+            onChange={(e) => {
+              setSelectedSymbol(e.target.value);
+              // A custom range is expressed in months of the previous
+              // symbol, which may not exist in the new symbol's history.
+              setCustomFrom("");
+              setCustomTo("");
+              setRangePreset("3Y");
+            }}
             className="px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 min-w-[200px]"
           >
-            {filteredSymbols.map((s) => (
+            {symbolOptions.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>

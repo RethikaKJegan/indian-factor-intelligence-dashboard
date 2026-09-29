@@ -12,7 +12,7 @@ import {
   formatPercent,
   getFactorColor,
 } from "@/lib/data";
-import { Play, Pause, StepForward, RotateCcw, Target, Briefcase, Newspaper, TrendingUp } from "lucide-react";
+import { Play, Pause, StepForward, RotateCcw, Target, Newspaper, TrendingUp } from "lucide-react";
 import type { FactorName } from "@/types";
 
 export function SimulationPage() {
@@ -54,6 +54,16 @@ export function SimulationPage() {
   const monthTrades = trades.filter((t) => t.month.slice(0, 7) === month.slice(0, 7) && t.signal_type !== "HOLD").slice(0, 14);
   const news = getNewsArticlesByMonth(month, 6);
   const decisionNews = decision?.supporting_news?.length ? decision.supporting_news : news;
+  // RSS archives reach only recent dates, so most replayed months have no
+  // articles. State the coverage rather than showing an empty panel that reads
+  // as "no news events occurred".
+  const newsMonthsWithData = useMemo(() => {
+    const set = new Set<string>();
+    for (const m of months) {
+      if (getNewsArticlesByMonth(m, 1).length > 0) set.add(m);
+    }
+    return set;
+  }, [months]);
   const curve = bt.filter((b) => b.month >= fromMonth && b.month <= month);
 
   const factorRows: [FactorName, number][] = alloc
@@ -188,9 +198,19 @@ export function SimulationPage() {
         </Card>
       </div>
 
-      <Card title="News Evidence For Selected Month" subtitle="Clickable RSS articles matched to the replay month">
+      <Card
+        title="News Evidence For Selected Month"
+        subtitle={`RSS coverage: ${newsMonthsWithData.size} of ${months.length} replayed months have articles`}
+      >
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-          {decisionNews.length === 0 ? <div className="text-sm text-slate-500">No fetched RSS stories for this historical month. Current RSS feeds mainly cover recent dates.</div> : decisionNews.map((a) => (
+          {decisionNews.length === 0 ? (
+            <div className="text-sm text-slate-500">
+              No RSS articles are archived for {month}. The feeds only retain recent
+              dates, so historical months have no stored coverage. This is a gap in
+              the news archive, not an absence of news events, and the regime and
+              allocation shown above do not depend on it.
+            </div>
+          ) : decisionNews.map((a) => (
             <a key={a.article_id} href={a.url} target="_blank" rel="noreferrer" className="rounded-lg border border-slate-200 p-4 hover:border-blue-300 hover:bg-blue-50/40 transition-colors">
               <div className="text-xs text-slate-500 mb-2">{a.source} - {a.published_date}</div>
               <div className="text-sm font-semibold text-slate-900 line-clamp-2">{a.title}</div>

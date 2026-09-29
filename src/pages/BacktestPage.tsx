@@ -1,5 +1,6 @@
-import { Card, StatCard, Table, Badge, RegimeBadge } from "@/components/UI";
+import { Card, Table, RegimeBadge } from "@/components/UI";
 import { LineChart, Heatmap, BarChart } from "@/components/Charts";
+import { BacktestReliability } from "@/components/BacktestReliability";
 import {
   getBacktestPortfolio,
   getBacktestSummary,
@@ -7,7 +8,6 @@ import {
   formatPercent,
   formatNumber,
 } from "@/lib/data";
-import { TrendingUp, Activity, Shield, BarChart3, Award } from "lucide-react";
 
 const STRATEGIES = [
   "Dynamic Regime Factor Allocation",
@@ -15,7 +15,32 @@ const STRATEGIES = [
   "Nifty 200 Buy & Hold",
 ];
 const STRATEGY_COLORS = ["#3b82f6", "#8b5cf6", "#10b981"];
-const STRATEGY_SHORT = ["Dynamic", "Static 25/25", "Benchmark"];
+
+/**
+ * Display names keyed by full strategy name, never by array position. A
+ * strategy missing from the backtest output must not shift another
+ * strategy's label onto its numbers.
+ */
+const STRATEGY_SHORT: Record<string, string> = {
+  "Dynamic Regime Factor Allocation": "Dynamic",
+  "Static 25/25/25/25": "Static 25/25",
+  "Nifty 200 Buy & Hold": "Benchmark",
+};
+
+const shortName = (full: string) => STRATEGY_SHORT[full] ?? full;
+
+/**
+ * What each strategy actually does, so the benchmark is not a mystery and the
+ * comparison is interpretable.
+ */
+const STRATEGY_BLURB: Record<string, string> = {
+  "Dynamic Regime Factor Allocation":
+    "Weights the four factors each month from the regime and trailing factor returns.",
+  "Static 25/25/25/25":
+    "Equal 25% in every factor every month. No timing, no regime input. The control.",
+  "Nifty 200 Buy & Hold":
+    "The benchmark: 100% in the Nifty 200 index, bought once and held. No model at all.",
+};
 
 export function BacktestPage() {
   const btPortfolio = getBacktestPortfolio();
@@ -34,20 +59,19 @@ export function BacktestPage() {
   const dynCurve = btPortfolio.filter((b) => b.strategy_name === STRATEGIES[0]);
   const xLabels = dynCurve.map((b) => b.month);
 
-  const equityData = STRATEGIES.map((sname, i) => ({
-    label: STRATEGY_SHORT[i],
+  const equityData = STRATEGIES.map((sname) => ({
+    label: shortName(sname),
     values: btPortfolio.filter((b) => b.strategy_name === sname).map((b) => b.portfolio_value),
   }));
 
   // Drawdown
-  const drawdownData = STRATEGIES.map((sname, i) => ({
-    label: STRATEGY_SHORT[i],
+  const drawdownData = STRATEGIES.map((sname) => ({
+    label: shortName(sname),
     values: btPortfolio.filter((b) => b.strategy_name === sname).map((b) => b.drawdown),
   }));
 
   // Monthly returns heatmap for Dynamic
   const dynReturns = btPortfolio.filter((b) => b.strategy_name === STRATEGIES[0]);
-  const months = dynReturns.map((b) => b.month);
 
   // Group by year for heatmap
   const yearMonths: Record<string, { [key: string]: number }> = {};
@@ -65,7 +89,9 @@ export function BacktestPage() {
   const heatRows = years;
   const heatCols = monthNames;
   const heatValues = years.map((y) =>
-    monthLabels.map((m) => yearMonths[y]?.[m] ?? 0)
+    // `null` marks "no backtest row for this month"; a real 0.0% month must
+    // stay 0 so it is not confused with missing data.
+    monthLabels.map((m) => yearMonths[y]?.[m] ?? null)
   );
 
   // Regime performance bar
@@ -86,8 +112,11 @@ export function BacktestPage() {
 
       {/* Summary Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {summaries.map((s, i) => (
-          <Card key={s.strategy_name} title={STRATEGY_SHORT[i]}>
+        {summaries.map((s) => (
+          <Card key={s.strategy_name} title={shortName(s.strategy_name)}>
+            <p className="mb-3 text-xs text-slate-500">
+              {STRATEGY_BLURB[s.strategy_name] ?? ""}
+            </p>
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <p className="text-[10px] text-slate-500 uppercase">CAGR</p>
@@ -150,9 +179,11 @@ export function BacktestPage() {
           rows={heatRows}
           cols={heatCols}
           values={heatValues}
-          cellFormat={(v) => v === 0 ? "—" : formatPercent(v, 1)}
+          cellFormat={(v) => formatPercent(v, 1)}
           colorScale={(v) => {
-            if (v === 0) return "#f1f5f9";
+            // Missing cells are handled by Heatmap itself, so 0 here is a
+            // genuine flat month and gets a neutral (not "no data") shade.
+            if (v === 0) return "#e2e8f0";
             if (v > 0.05) return "#10b981";
             if (v > 0.02) return "#86efac";
             if (v > 0) return "#d1fae5";
@@ -215,8 +246,8 @@ export function BacktestPage() {
             { key: "best_month", label: "Best", align: "right" },
             { key: "worst_month", label: "Worst", align: "right" },
           ]}
-          data={summaries.map((s, i) => ({
-            strategy_name: STRATEGY_SHORT[i],
+          data={summaries.map((s) => ({
+            strategy_name: shortName(s.strategy_name),
             cagr: formatPercent(s.cagr),
             total_return: formatPercent(s.total_return),
             annual_volatility: formatPercent(s.annual_volatility),
@@ -230,6 +261,8 @@ export function BacktestPage() {
           maxHeight="200px"
         />
       </Card>
+
+      <BacktestReliability />
     </div>
   );
 }

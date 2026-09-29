@@ -24,6 +24,8 @@ export function NewsPage() {
   const monthly = getNewsFeatures();
   const latestDay = daily.length ? daily[daily.length - 1] : null;
   const latestMonth = monthly.length ? monthly[monthly.length - 1] : null;
+  // Months whose sentiment rests on too few articles to mean anything.
+  const lowSample = monthly.filter((m) => (m.article_count ?? 0) < 5);
   const riskRows = latest
     .filter((a) => a.risk_event_count > 0 || a.is_negative)
     .slice(0, 8)
@@ -54,6 +56,35 @@ export function NewsPage() {
         <StatCard label="Negative Ratio" value={formatPercent(latestDay?.negative_ratio ?? 0)} subvalue="Daily news stress" icon={<AlertTriangle className="w-5 h-5" />} color={(latestDay?.negative_ratio ?? 0) > 0.35 ? "red" : "amber"} />
         <StatCard label="News Confidence" value={formatPercent(latestMonth?.news_confidence ?? latestDay?.news_confidence ?? 0)} subvalue={latestMonth?.month ?? "Monthly feature"} icon={<Activity className="w-5 h-5" />} color="purple" />
       </div>
+
+      <Card
+        title="News Archive Coverage"
+        subtitle={`${monthly.length} month${monthly.length === 1 ? "" : "s"} carry sentiment features`}
+      >
+        <p className="text-sm text-slate-600">
+          Sentiment is the mean over every article fetched for a month. A month
+          with a single article therefore has a sentiment of exactly that one
+          article&apos;s score, which is not a meaningful monthly signal. Months
+          with no articles have no score at all rather than a neutral zero.
+        </p>
+        {lowSample.length > 0 && (
+          <div className="mt-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-amber-700">
+              Low-sample months (fewer than 5 articles)
+            </p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {lowSample.map((m) => (
+                <span
+                  key={m.month}
+                  className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-800"
+                >
+                  {m.month}: {m.article_count ?? 0} article{(m.article_count ?? 0) === 1 ? "" : "s"}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </Card>
 
       <Card title="Latest Market News" subtitle={`${latest.length} stories from RSS and market queries`}>
         {latest.length === 0 ? (
