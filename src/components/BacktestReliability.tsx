@@ -48,6 +48,7 @@ export function BacktestReliability() {
   const ci = report.confidence_intervals ?? {};
   const sharpeCI = ci.sharpe;
   const cagrCI = ci.cagr;
+  const roll = report.rolling_36m;
 
   // A Newey-West t below 1.96 means the average month is not distinguishable
   // from zero. Stating the threshold next to the number keeps the reader from
@@ -459,6 +460,91 @@ export function BacktestReliability() {
             {formatPercent(costs.stress_cagr)} at {costs.stress_bps} bps — a loss
             of {costs.cagr_lost_to_costs_pct?.toFixed(2)} points, so the result
             is not an artefact of a favourable cost assumption.
+          </p>
+        </Card>
+      )}
+
+      {/* Whether the result survives being cut into three-year pieces. */}
+      {roll?.available && (
+        <Card
+          title="Does it hold in every three-year stretch?"
+          subtitle={`${roll.windows} overlapping ${roll.window_months}-month windows, each compounded as if it were the whole backtest`}
+        >
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <StatCard
+              label="Windows compounding positive"
+              value={`${roll.pct_windows_positive_cagr.toFixed(0)}%`}
+              subvalue={`${roll.windows_positive_cagr} of ${roll.windows}`}
+              color={roll.pct_windows_positive_cagr >= 90 ? "green" : roll.pct_windows_positive_cagr >= 60 ? "amber" : "red"}
+            />
+            <StatCard
+              label="Median window"
+              value={formatPercent(roll.median_cagr)}
+              subvalue={`Sharpe ${roll.median_sharpe.toFixed(2)}`}
+              color="blue"
+            />
+            <StatCard
+              label="Worst window"
+              value={formatPercent(roll.min_cagr)}
+              subvalue={roll.worst_window.from.slice(0, 7)}
+              color={roll.min_cagr > 0 ? "green" : "red"}
+            />
+            <StatCard
+              label="Best window"
+              value={formatPercent(roll.max_cagr)}
+              subvalue={roll.best_window.from.slice(0, 7)}
+              color="blue"
+            />
+          </div>
+
+          <p className="text-xs text-slate-600 mt-3 leading-relaxed">
+            {roll.interpretation}
+          </p>
+
+          {/* The distribution, not just the summary. A histogram shape is the
+              thing a reader should see: a tight band says the edge is
+              consistent, a long negative tail says the headline is one good
+              decade inside a bad one. */}
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+              <span>Worst</span>
+              <span>36-month CAGR by window</span>
+              <span>Best</span>
+            </div>
+            <div className="flex items-end gap-px h-20">
+              {roll.series.map((w, i) => {
+                const h =
+                  (w.cagr - roll.min_cagr) / (roll.max_cagr - roll.min_cagr || 1);
+                return (
+                  <div
+                    key={`${w.from}-${i}`}
+                    className={`flex-1 rounded-t-sm min-w-[2px] ${
+                      w.cagr > 0 ? "bg-emerald-400" : "bg-rose-400"
+                    }`}
+                    style={{ height: `${Math.max(4, h * 100)}%` }}
+                    title={`${w.from} to ${w.to}: ${formatPercent(w.cagr)} CAGR, Sharpe ${w.sharpe.toFixed(2)}, max DD ${formatPercent(w.max_drawdown)}`}
+                  />
+                );
+              })}
+            </div>
+            <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+              <span>
+                {roll.series[0]?.from.slice(0, 7)} to {roll.series[0]?.to.slice(0, 7)}
+              </span>
+              <span>
+                {roll.series[roll.series.length - 1]?.from.slice(0, 7)} to{" "}
+                {roll.series[roll.series.length - 1]?.to.slice(0, 7)}
+              </span>
+            </div>
+          </div>
+
+          <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+            Window Sharpe is against the {roll.sharpe_basis === "measured" ? "measured" : "zero"}{" "}
+            risk-free basis, matching the headline. The worst window,{" "}
+            {roll.worst_window.from.slice(0, 7)} to {roll.worst_window.to.slice(0, 7)},
+            compounded at {formatPercent(roll.worst_window.cagr)} with a Sharpe of{" "}
+            {roll.worst_window.sharpe.toFixed(2)}; the best, {roll.best_window.from.slice(0, 7)}{" "}
+            to {roll.best_window.to.slice(0, 7)}, at {formatPercent(roll.best_window.cagr)}.
           </p>
         </Card>
       )}

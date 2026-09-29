@@ -37,6 +37,7 @@ class PipelineState(TypedDict, total=False):
     validation_report: dict[str, Any]
     symbols: list[str]
     excluded: set[str]
+    survivorship: dict
     news_articles: list[dict[str, Any]]
     news_features: list[dict[str, Any]]
     regime_preds: list[dict[str, Any]]
@@ -135,12 +136,12 @@ def rss_news_node(state: PipelineState) -> PipelineState:
 
 
 def data_validation_node(state: PipelineState) -> PipelineState:
-    validation_report, symbols, excluded = rp.data_validation_agent(state["conn"])
+    validation_report, symbols, excluded, survivorship = rp.data_validation_agent(state["conn"])
     warnings = list(state.get("warnings", []))
     if not symbols:
         warnings.append("No tradable symbols were detected after validation.")
-        return {"validation_report": validation_report, "symbols": symbols, "excluded": excluded, "warnings": warnings, "route": "data_failed"}
-    return {"validation_report": validation_report, "symbols": symbols, "excluded": excluded, "warnings": warnings, "route": "ok"}
+        return {"validation_report": validation_report, "symbols": symbols, "excluded": excluded, "survivorship": survivorship, "warnings": warnings, "route": "data_failed"}
+    return {"validation_report": validation_report, "symbols": symbols, "excluded": excluded, "survivorship": survivorship, "warnings": warnings, "route": "ok"}
 
 
 def regime_node(state: PipelineState) -> PipelineState:
@@ -148,7 +149,10 @@ def regime_node(state: PipelineState) -> PipelineState:
 
 
 def factor_node(state: PipelineState) -> PipelineState:
-    baskets, factor_names = rp.factor_scoring_agent(state["conn"], state["regime_preds"], state.get("excluded", set()))
+    baskets, factor_names = rp.factor_scoring_agent(
+        state["conn"], state["regime_preds"], state.get("excluded", set()),
+        state.get("survivorship"),
+    )
     return {"baskets": baskets, "factor_names": factor_names}
 
 

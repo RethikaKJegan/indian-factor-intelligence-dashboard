@@ -4,9 +4,15 @@ import {
   getPerformanceReport,
   getConstraintCompliance,
   getCoverageAudit,
+  getPointInTimeSurvivorship,
   formatNumber,
 } from "@/lib/data";
-import type { ManifestCaveat, DataFreshness, FundamentalCoverageAudit } from "@/types";
+import type {
+  ManifestCaveat,
+  DataFreshness,
+  FundamentalCoverageAudit,
+  PointInTimeSurvivorship,
+} from "@/types";
 
 /**
  * Model Integrity.
@@ -82,6 +88,7 @@ export function ModelIntegrityPage() {
   const { run, inputs, code, caveats, caveat_summary: summary } = manifest;
   const freshness = manifest.data_freshness;
   const audit = getCoverageAudit();
+  const survivorship = getPointInTimeSurvivorship();
   const tables = Object.entries(inputs.tables).filter(([, t]) => t.present);
   const nonDeterministic = manifest.determinism.filter((d) => !d.deterministic);
   const sortedCaveats = [...caveats].sort(caveatSort);
@@ -223,6 +230,11 @@ export function ModelIntegrityPage() {
           })}
         </div>
       </Card>
+
+      {/* What the trading universe actually contained, month by month. */}
+      {survivorship?.available && (
+        <SurvivorshipCard pit={survivorship} />
+      )}
 
       {/* Why the fundamental factors see what they see. */}
       {audit && audit.available && <CoverageCard audit={audit} />}
@@ -486,6 +498,115 @@ function CheckRow({
  * problem with a different fix: not an outage, but a sector whose reporting
  * conventions have no counterpart in the metrics being computed.
  */
+/**
+ * Survivorship, counted rather than asserted.
+ *
+ * The point worth making visually is the asymmetry: the left side is what the
+ * gate fixed, the right side is what it can only count. Presenting the
+ * uncorrected number next to a satisfied-looking "gate enabled" badge would be
+ * the dishonest arrangement, so the uncorrected count is the one given the
+ * warning colour.
+ */
+function SurvivorshipCard({ pit }: { pit: PointInTimeSurvivorship }) {
+  const late = pit.db_symbols_not_yet_listed_examples ?? {};
+  const lateNames = Object.entries(late).slice(0, 8);
+
+  return (
+    <Card
+      title="Survivorship, measured"
+      subtitle={`${pit.symbols_observed.toLocaleString()} symbols observed trading across ${pit.months_covered} NSE bhavcopy month-ends, ${pit.archive_floor} to ${pit.archive_ceiling}`}
+    >
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard
+          label="Unlisted symbols gated"
+          value={String(pit.db_symbols_not_yet_listed_at_archive_start)}
+          subvalue={`of ${pit.db_symbols} in the database`}
+          color="green"
+        />
+        <StatCard
+          label="Backtest months gated"
+          value={`${pit.backtest_months_gated_pct.toFixed(0)}%`}
+          subvalue={`${pit.backtest_months_gated} of ${pit.backtest_months_gated + pit.backtest_months_ungated} months`}
+          color="green"
+        />
+        <StatCard
+          label="Names never ingested"
+          value={String(pit.stopped_trading_absent_from_db)}
+          subvalue="traded early, gone by the end"
+          color="red"
+        />
+        <StatCard
+          label="Trading universe grew"
+          value={`${pit.trading_universe_at_archive_start.toLocaleString()} → ${pit.trading_universe_at_archive_end.toLocaleString()}`}
+          subvalue="symbols per month-end"
+          color="blue"
+        />
+      </div>
+
+      <div className="mt-4 space-y-3">
+        <p className="text-xs text-slate-600 leading-relaxed">
+          {pit.interpretation}
+        </p>
+
+        {pit.gate_enabled ? (
+          <div className="rounded border border-emerald-200 bg-emerald-50 p-3">
+            <p className="text-xs font-medium text-emerald-800 mb-1.5">
+              Look-forward: corrected
+            </p>
+            <p className="text-xs text-emerald-700 leading-relaxed">
+              A symbol is now scored only in months it had already started
+              trading. These database symbols are held out of the months before
+              their listing:
+            </p>
+            {lateNames.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {lateNames.map(([sym, month]) => (
+                  <span
+                    key={sym}
+                    className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white border border-emerald-200 text-emerald-800"
+                  >
+                    {sym} · {month}
+                  </span>
+                ))}
+                {Object.keys(late).length > lateNames.length && (
+                  <span className="text-[10px] px-1.5 py-0.5 text-emerald-600">
+                    +{Object.keys(late).length - lateNames.length} more
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="rounded border border-amber-200 bg-amber-50 p-3">
+            <p className="text-xs text-amber-800 leading-relaxed">
+              Point-in-time gating is <strong>off</strong> this run. The
+              bhavcopy trading record was not present, so not-yet-listed symbols
+              are being scored in months they could not have traded.
+            </p>
+          </div>
+        )}
+
+        <div className="rounded border border-rose-200 bg-rose-50 p-3">
+          <p className="text-xs font-medium text-rose-800 mb-1.5">
+            Exclusion: not corrected
+          </p>
+          <p className="text-xs text-rose-700 leading-relaxed">
+            {pit.stopped_trading_absent_from_db} names were tradable early in
+            the window and are absent from the database, so they cannot drag
+            the result. A sample of them:{" "}
+            <span className="font-mono">
+              {(pit.examples_of_excluded_names ?? []).slice(0, 8).join(", ")}
+            </span>
+            . This is the part that inflates the return, and no amount of
+            pipeline work removes it — it needs fundamentals for tickers that
+            were never ingested.
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 function CoverageCard({ audit }: { audit: FundamentalCoverageAudit }) {
   const bc = audit.summary.by_classification;
   const total = audit.summary.total_symbols || 1;

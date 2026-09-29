@@ -35,6 +35,7 @@ import type {
   PortfolioConstraintCompliance,
   ExperimentManifest,
   FundamentalCoverageAudit,
+  PointInTimeSurvivorship,
 } from "@/types";
 import { REGIME_LABELS } from "@/types";
 
@@ -83,6 +84,7 @@ let costScenarios: CostScenarioTable | null = null;
 let constraintCompliance: PortfolioConstraintCompliance | null = null;
 let experimentManifest: ExperimentManifest | null = null;
 let coverageAudit: FundamentalCoverageAudit | null = null;
+let pointInTime: PointInTimeSurvivorship | null = null;
 let dashboardDataLoaded = false;
 
 const DATA_BASE = "/data";
@@ -141,6 +143,7 @@ export async function loadDashboardData(): Promise<void> {
     constraintComplianceJson,
     experimentManifestJson,
     coverageAuditJson,
+    pointInTimeJson,
   ] = await Promise.all([
     fetchDataFile<RegimePrediction[]>("regime_predictions"),
     fetchDataFile<FactorBasketEntry[]>("factor_baskets"),
@@ -174,6 +177,7 @@ export async function loadDashboardData(): Promise<void> {
     fetchOptionalDataFile<FundamentalCoverageAudit>(
       "fundamental_coverage_audit",
     ),
+    fetchOptionalDataFile<PointInTimeSurvivorship>("point_in_time_universe"),
   ]);
 
   regimes = regimesJson;
@@ -204,6 +208,7 @@ export async function loadDashboardData(): Promise<void> {
   constraintCompliance = constraintComplianceJson;
   experimentManifest = experimentManifestJson;
   coverageAudit = coverageAuditJson;
+  pointInTime = pointInTimeJson;
   dashboardDataLoaded = true;
 }
 
@@ -411,6 +416,11 @@ export function getExperimentManifest(): ExperimentManifest | null {
  */
 export function getCoverageAudit(): FundamentalCoverageAudit | null {
   return coverageAudit;
+}
+
+/** The bhavcopy-derived survivorship measurement, when the pipeline emitted it. */
+export function getPointInTimeSurvivorship(): PointInTimeSurvivorship | null {
+  return pointInTime;
 }
 
 export function getOverviewData(): OverviewData | null {

@@ -53,6 +53,15 @@ BOOTSTRAP_SEED = 20260929
 #: Resamples drawn per interval.
 BOOTSTRAP_SAMPLES = 2000
 
+#: Annualised volatility below which a Sharpe ratio is undefined rather than
+#: merely large. A series of identical returns has zero variance, but subtracting
+#: a monthly risk-free rate from each element leaves float noise in the tens of
+#: decimal places, so a plain `vol > 0` guard does not catch it and the ratio
+#: comes out in the 1e15 range. Real monthly return series annualise to 5-60%
+#: volatility, so 1e-6 sits nine orders of magnitude below anything observable
+#: and well above the noise it is there to reject.
+MIN_ANNUAL_VOL = 1e-6
+
 
 # ── Return-path statistics ─────────────────────────────────────────────────
 
@@ -137,7 +146,7 @@ def sharpe_at(rets: list[float], rf_annual: float) -> float:
     var = sum((x - mean) ** 2 for x in rets) / (n - 1)
     vol = math.sqrt(var) * math.sqrt(12)
     excess = (mean - rf_m) * 12
-    return excess / vol if vol > 0 else 0.0
+    return excess / vol if vol > MIN_ANNUAL_VOL else 0.0
 
 
 def sortino_at(rets: list[float], rf_annual: float) -> float:
@@ -331,7 +340,7 @@ def _sharpe_of(rets: list[float], rf_annual: float) -> float:
     mean = sum(rets) / n
     var = sum((x - mean) ** 2 for x in rets) / (n - 1)
     vol = math.sqrt(var)
-    return ((mean - rf_m) / vol * math.sqrt(12)) if vol > 0 else 0.0
+    return ((mean - rf_m) / vol * math.sqrt(12)) if vol > MIN_ANNUAL_VOL else 0.0
 
 
 def _block_length(n: int) -> int:
@@ -464,7 +473,7 @@ def sharpe_from_excess(excess: list[float]) -> float:
     mean = sum(excess) / n
     var = sum((x - mean) ** 2 for x in excess) / (n - 1)
     vol = math.sqrt(var) * math.sqrt(12)
-    return (mean * 12) / vol if vol > 0 else 0.0
+    return (mean * 12) / vol if vol > MIN_ANNUAL_VOL else 0.0
 
 
 def sortino_from_excess(excess: list[float]) -> float:
@@ -478,6 +487,100 @@ def sortino_from_excess(excess: list[float]) -> float:
     if denom <= 0:
         return 0.0
     return (mean * 12) / (denom * math.sqrt(12))
+
+
+def rolling_performance(
+    rets: list[float],
+    months: list[str],
+    window: int = 36,
+    rf_monthly: list[float] | None = None,
+) -> dict:
+    """Every trailing `window`-month slice of the backtest, scored the same way.
+
+    A single full-sample CAGR over 149 months hides the question a reader
+    actually has: how much of the result depends on the whole history being
+    present at once. This slides a 36-month window across the return series and
+    reports what each slice would have looked like on its own, which is a
+    backtest nobody ran but is the honest test of whether the edge persisted or
+    arrived in one stretch.
+
+    The summary counts are the point. A strategy whose edge is real has most
+    windows positive; one that got there in a single run has a bimodal
+    distribution with a long negative tail, and the headline CAGR conceals it.
+    """
+    n = len(rets)
+    if n < window or len(months) != n:
+        return {
+            "available": False,
+            "window_months": window,
+            "reason": (
+                f"needs at least {window} months; the return path has {n}."
+                if n < window
+                else "return path and month labels are different lengths."
+            ),
+        }
+
+    series: list[dict] = []
+    for end in range(window, n + 1):
+        chunk = rets[end - window:end]
+        win_months = months[end - window:end]
+        if rf_monthly is not None and len(rf_monthly) >= n:
+            sub_rf = rf_monthly[end - window:end]
+            sharpe = sharpe_from_excess(
+                [r - f for r, f in zip(chunk, sub_rf)]
+            )
+            basis = "measured"
+        else:
+            sharpe = sharpe_at(chunk, 0.0)
+            basis = "zero_rate"
+        values = [100.0]
+        for x in chunk:
+            values.append(values[-1] * (1.0 + x))
+        series.append({
+            "from": win_months[0],
+            "to": win_months[-1],
+            "cagr": round(_cagr_of(chunk), 4),
+            "sharpe": round(sharpe, 4),
+            "max_drawdown": round(min(max_drawdown_series(values)), 4),
+        })
+
+    cagrs = [s["cagr"] for s in series]
+    sharpes = [s["sharpe"] for s in series]
+    best = max(series, key=lambda s: s["cagr"])
+    worst = min(series, key=lambda s: s["cagr"])
+    pos_cagr = sum(1 for c in cagrs if c > 0)
+    pos_sharpe = sum(1 for s in sharpes if s > 0)
+
+    return {
+        "available": True,
+        "window_months": window,
+        "windows": len(series),
+        "windows_positive_cagr": pos_cagr,
+        "windows_sharpe_above_zero": pos_sharpe,
+        "pct_windows_positive_cagr": round(100.0 * pos_cagr / len(series), 1),
+        "pct_windows_sharpe_above_zero": round(100.0 * pos_sharpe / len(series), 1),
+        "median_cagr": round(sorted(cagrs)[len(cagrs) // 2], 4),
+        "min_cagr": round(worst["cagr"], 4),
+        "max_cagr": round(best["cagr"], 4),
+        "median_sharpe": round(sorted(sharpes)[len(sharpes) // 2], 4),
+        "worst_window": {k: worst[k] for k in ("from", "to", "cagr", "sharpe")},
+        "best_window": {k: best[k] for k in ("from", "to", "cagr", "sharpe")},
+        # From the per-window decision, not from whether `rf_monthly` was passed
+        # at all: a series too short to align with the return path is silently
+        # ignored, and labelling that "measured" would misreport the basis.
+        "sharpe_basis": basis,
+        "series": series,
+        "interpretation": (
+            f"{pos_cagr} of {len(series)} overlapping {window}-month windows "
+            f"compounded positively ({round(100.0 * pos_cagr / len(series), 1)}%), "
+            f"with a median of {sorted(cagrs)[len(cagrs) // 2] * 100:.1f}% a year "
+            f"and a range of {worst['cagr'] * 100:.1f}% to {best['cagr'] * 100:.1f}%. "
+            f"The full-sample headline is the compounding of all of these, so it "
+            f"is not representative of any single {window / 12:.0f}-year stretch: "
+            f"the median window is the better description of what a reader would "
+            f"have experienced starting at an arbitrary date."
+        ),
+    }
 
 
 def full_report(
@@ -667,6 +770,16 @@ def full_report(
     ci_cagr = bootstrap_ci(rets, "cagr")
     if ci_cagr:
         report.setdefault("confidence_intervals", {})["cagr"] = ci_cagr
+
+    # How much of the headline depends on the whole 149 months being present at
+    # once. The confidence interval says the point estimate is imprecise; this
+    # says what the strategy actually did in each three-year stretch, which is
+    # the question the interval cannot answer.
+    roll = rolling_performance(
+        rets, months, window=36, rf_monthly=rf_monthly if measured else None,
+    )
+    if roll.get("available"):
+        report["rolling_36m"] = roll
     return report
 
 

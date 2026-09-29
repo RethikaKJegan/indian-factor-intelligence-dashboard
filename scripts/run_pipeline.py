@@ -16,6 +16,7 @@ from pathlib import Path
 from email.utils import parsedate_to_datetime
 
 import universe as universe_policy
+import point_in_time as point_in_time_policy
 import regime_model
 import price_sanity
 import factor_engine
@@ -425,7 +426,49 @@ def compute_universe_coverage(conn):
             "  NOTE: universe.py baseline can now be trimmed; these are supported again: "
             + ", ".join(stale)
         )
-    return universe_policy.excluded_symbols(coverage), report
+
+    # Survivorship, measured rather than asserted. The trading record is the
+    # full list of symbols that traded on a given day, so it says both how many
+    # database symbols could not have been held and how many tradable names the
+    # database has never seen. Both numbers are needed: the first is fixable and
+    # is fixed below, the second is not and is reported.
+    cursor.execute("SELECT DISTINCT month FROM factor_scores_monthly ORDER BY month")
+    scored_months = [r[0][:7] for r in cursor.fetchall()]
+    db_symbols = set(price_months) | set(fundamental_months)
+
+    project_dir = str(Path(__file__).resolve().parent.parent)
+    pit = point_in_time_policy.load_point_in_time(project_dir)
+    survivorship = point_in_time_policy.assess_survivorship(pit, db_symbols, scored_months)
+    survivorship["first_traded"] = (point_in_time_policy.first_traded(pit)
+                                    if pit else {})
+    survivorship["backtest_month_range"] = (
+        [scored_months[0], scored_months[-1]] if scored_months else None
+    )
+    survivorship["gate_enabled"] = bool(pit)
+    write_json("point_in_time_universe", survivorship)
+    report["point_in_time"] = {
+        "gate_enabled": survivorship["gate_enabled"],
+        "archive_floor": survivorship.get("archive_floor"),
+        "backtest_months_gated": survivorship.get("backtest_months_gated"),
+        "backtest_months_gated_pct": survivorship.get("backtest_months_gated_pct"),
+    }
+
+    if not pit:
+        print(
+            "  WARNING: no bhavcopy trading record at data_input/"
+            "nse_trading_universe.json, so point-in-time gating is OFF and "
+            "not-yet-listed symbols are scored in months they could not trade."
+        )
+    else:
+        print(
+            f"  Point-in-time: {survivorship['db_symbols_not_yet_listed_at_archive_start']}"
+            f" database symbols were unlisted when the archive opens; gated out of "
+            f"{survivorship['backtest_months_gated']} of "
+            f"{len(scored_months)} backtest months. "
+            f"{survivorship['stopped_trading_absent_from_db']} names that stopped "
+            f"trading are absent from the database and remain an uncorrected bias."
+        )
+    return universe_policy.excluded_symbols(coverage), report, survivorship
 
 
 def data_validation_agent(conn):
@@ -453,7 +496,7 @@ def data_validation_agent(conn):
         report[f"duplicates_{table}"] = len(dups)
 
     # Derive the modeling universe from measured data depth
-    excluded, coverage_report = compute_universe_coverage(conn)
+    excluded, coverage_report, survivorship = compute_universe_coverage(conn)
     report["universe_coverage"] = coverage_report
     write_json("universe_coverage", coverage_report)
     if coverage_report["excluded_count"]:
@@ -505,7 +548,7 @@ def data_validation_agent(conn):
     write_json("stocks", stocks)
     report["final_stock_count"] = len(symbols)
     print(f"[DataValidationAgent] Done. {len(symbols)} stocks.")
-    return report, symbols, excluded
+    return report, symbols, excluded, survivorship
 
 # ─── RegimeDetectionAgent ───
 def regime_detection_agent(conn, news_features=None):
@@ -793,7 +836,7 @@ def _rebuild_fundamental_factors(conn, months, excluded):
     return out
 
 
-def factor_scoring_agent(conn, regime_preds, excluded=frozenset()):
+def factor_scoring_agent(conn, regime_preds, excluded=frozenset(), survivorship=None):
     print("[FactorScoringAgent] Starting...")
     cursor = conn.cursor()
 
@@ -866,8 +909,27 @@ def factor_scoring_agent(conn, regime_preds, excluded=frozenset()):
         )
 
     coverage_report = {}
+    first_traded = (survivorship or {}).get("first_traded") or {}
+    db_symbols = {r.get("symbol") for r in rows if r.get("symbol")}
     for month in months:
-        month_rows = [r for r in rows if r["month"][:7] == month and r.get("symbol") not in excluded]
+        # Point-in-time eligibility. A symbol is only scoreable in a month it
+        # was already trading, judged by the bhavcopy record. Before the archive
+        # floor there is no evidence, so nothing is gated there and the residual
+        # bias is reported rather than hidden.
+        if first_traded:
+            floor = min(first_traded.values())
+            if month >= floor:
+                tradable = {s for s in db_symbols if first_traded.get(s, floor) <= month}
+            else:
+                tradable = db_symbols
+        else:
+            tradable = db_symbols
+        month_rows = [
+            r for r in rows
+            if r["month"][:7] == month
+            and r.get("symbol") not in excluded
+            and r.get("symbol") in tradable
+        ]
         rb = rebuilt.get(month)
         for fname, fcol in factor_map.items():
             override = None
@@ -2222,13 +2284,15 @@ def main():
     )
 
     # Node 1: DataValidationAgent
-    validation_report, symbols, excluded = data_validation_agent(conn)
+    validation_report, symbols, excluded, survivorship = data_validation_agent(conn)
 
     # Node 2: RegimeDetectionAgent
     regime_preds = regime_detection_agent(conn, news_features)
 
     # Node 3: FactorScoringAgent
-    baskets, factor_names = factor_scoring_agent(conn, regime_preds, excluded)
+    baskets, factor_names = factor_scoring_agent(
+        conn, regime_preds, excluded, survivorship
+    )
 
     # Node 4: FactorForecastAgent
     factor_returns, diagnostics = factor_forecast_agent(conn, baskets, regime_preds, excluded)

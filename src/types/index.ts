@@ -491,6 +491,41 @@ export interface PerformanceReport {
     interpretation: string;
   };
   confidence_intervals: Partial<Record<"sharpe" | "cagr" | "mean", BootstrapCI>>;
+  /**
+   * Every trailing 36-month window of the backtest, scored the same way.
+   *
+   * The confidence interval says the point estimate is imprecise. This answers
+   * the question an interval cannot: whether the result depends on the whole
+   * 149 months being present at once, or held in each three-year stretch on its
+   * own. The summary counts are the point -- a strategy whose edge is real has
+   * most windows positive, and a bimodal distribution is a warning the
+   * headline CAGR conceals.
+   */
+  rolling_36m?: {
+    available: boolean;
+    window_months: number;
+    windows: number;
+    windows_positive_cagr: number;
+    windows_sharpe_above_zero: number;
+    pct_windows_positive_cagr: number;
+    pct_windows_sharpe_above_zero: number;
+    median_cagr: number;
+    min_cagr: number;
+    max_cagr: number;
+    median_sharpe: number;
+    worst_window: { from: string; to: string; cagr: number; sharpe: number };
+    best_window: { from: string; to: string; cagr: number; sharpe: number };
+    /** Whether window Sharpe used the measured rate or a zero rate. */
+    sharpe_basis: string;
+    series: {
+      from: string;
+      to: string;
+      cagr: number;
+      sharpe: number;
+      max_drawdown: number;
+    }[];
+    interpretation: string;
+  };
   cost_model: { bps: number; label: string };
   /**
    * Selection-bias adjustment.
@@ -555,6 +590,35 @@ export interface FundamentalCoverageAudit {
   unexplained: string[];
   symbols: CoverageSymbol[];
   note: string;
+}
+
+/**
+ * Survivorship, measured against the NSE bhavcopy archive rather than asserted.
+ *
+ * A bhavcopy lists every symbol that traded on a given day, so it observes the
+ * trading universe directly. That splits the bias in two: look-forward, which
+ * the pipeline now gates out, and exclusion, which it can only count.
+ */
+export interface PointInTimeSurvivorship {
+  available: boolean;
+  gate_enabled: boolean;
+  archive_floor: string | null;
+  archive_ceiling: string | null;
+  months_covered: number;
+  symbols_observed: number;
+  trading_universe_at_archive_start: number;
+  trading_universe_at_archive_end: number;
+  /** Traded early, gone by the end, and never ingested. The uncorrected bias. */
+  stopped_trading_absent_from_db: number;
+  db_symbols: number;
+  db_symbols_trading_at_archive_start: number;
+  db_symbols_not_yet_listed_at_archive_start: number;
+  db_symbols_not_yet_listed_examples: Record<string, string>;
+  examples_of_excluded_names: string[];
+  backtest_months_gated: number;
+  backtest_months_ungated: number;
+  backtest_months_gated_pct: number;
+  interpretation: string;
 }
 
 /**

@@ -35,6 +35,13 @@ langgraph_run_report.md
 # instead, which is what reproducibility actually needs.
 data_input/news_snapshot.json
 
+# Raw NSE bhavcopy downloads behind the point-in-time trading record. Roughly
+# 30 MB of daily snapshots that are pure cache: scripts/nse_universe.py refetches
+# anything missing. What actually gets committed is the 165 KB
+# data_input/nse_trading_universe.json summary derived from them, because the
+# archive floor is 2019-09 and a scheduled run cannot refetch 2014.
+data_input/bhavcopy_cache/
+
 # Python cache
 __pycache__/
 *.py[cod]

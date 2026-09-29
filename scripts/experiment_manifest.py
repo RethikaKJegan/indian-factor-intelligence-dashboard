@@ -363,7 +363,44 @@ def collect_caveats(json_dir: str) -> list[dict]:
             return None
 
     cov = load("universe_coverage")
-    if cov:
+    pit = load("point_in_time_universe")
+    if cov and pit and pit.get("available"):
+        index_name = str(cov.get("index_name") or "Nifty 200").strip()
+        gated = pit.get("backtest_months_gated_pct", 0.0)
+        caveats.append({
+            "id": "survivorship_bias",
+            "severity": "high",
+            "statement": (
+                f"Partly corrected, and the remainder is now measured rather "
+                f"than asserted. Every month-end of the NSE bhavcopy archive "
+                f"({pit.get('archive_floor')} to {pit.get('archive_ceiling')}, "
+                f"{pit.get('months_covered')} snapshots) lists every symbol that "
+                f"traded that day, so the trading universe is known directly. A "
+                f"symbol is now scored only in months it had already started "
+                f"trading, which removes {pit.get('db_symbols_not_yet_listed_at_archive_start')} "
+                f"of {pit.get('db_symbols')} database symbols from the "
+                f"{gated:.0f}% of backtest months the archive covers -- several "
+                f"were 2024-25 listings previously carried back to 2014. The "
+                f"gate is worth 0.6pp of CAGR and 1.1pp of drawdown. What "
+                f"remains is exclusion rather than look-forward: "
+                f"{pit.get('stopped_trading_absent_from_db')} symbols traded at "
+                f"the start of the archive and had stopped by the end, and the "
+                f"database holds none of them, against a trading universe that "
+                f"grew from {pit.get('trading_universe_at_archive_start')} to "
+                f"{pit.get('trading_universe_at_archive_end')} names. Those are "
+                f"invisible to today's {index_name} list, so the return remains "
+                f"biased upward by an unknown amount."
+            ),
+            "why_not_fixed": (
+                f"Correcting the remaining {pit.get('stopped_trading_absent_from_db')} "
+                "names needs fundamentals for tickers never ingested, which is "
+                "paid data acquisition rather than calculation. The archive also "
+                f"only reaches {pit.get('archive_floor')}, so the "
+                f"{pit.get('backtest_months_ungated')} earlier backtest months "
+                "are ungated."
+            ),
+        })
+    elif cov:
         index_name = str(cov.get("index_name") or "Nifty 200").strip()
         caveats.append({
             "id": "survivorship_bias",
@@ -374,13 +411,12 @@ def collect_caveats(json_dir: str) -> list[dict]:
                 "the whole history. A stock that was removed from the index is "
                 "absent from the backtest rather than being held to zero, so "
                 "delisted and dropped names cannot drag the result and the "
-                "return is biased upward."
+                "return is biased upward. No bhavcopy trading record was "
+                "available this run, so point-in-time gating is off."
             ),
             "why_not_fixed": (
-                "The source database has no effective_from / effective_to "
-                "columns and no add/remove dates, and the constituent list is a "
-                "single static file. Correcting this needs paid historical NSE "
-                "constituent data."
+                "data_input/nse_trading_universe.json was absent. Rebuild it "
+                "with scripts/nse_universe.py to restore the gate."
             ),
         })
 
@@ -441,15 +477,33 @@ def collect_caveats(json_dir: str) -> list[dict]:
                 ),
             })
         if n_sparse:
+            sparse_syms = [s for s in audit.get("symbols", [])
+                           if s.get("classification") == "sparse"]
+            detail = ", ".join(
+                f"{s['symbol']} ({s.get('coverage_pct', 0):.0f}% of "
+                f"{s.get('months_with_rows', 0)} months)"
+                for s in sparse_syms[:6]
+            )
             caveats.append({
                 "id": "sparse_fundamental_coverage",
                 "severity": "low",
                 "statement": (
                     f"{n_sparse} symbols carry metrics in fewer than half their "
                     "months, so the coverage rule withholds their score in most "
-                    "months and they contribute unevenly to the factors."
+                    "months and they contribute unevenly to the factors: "
+                    f"{detail}. The rule is doing the conservative thing here, "
+                    "since a score computed from the months that happen to be "
+                    "populated would be noisier than no score at all."
                 ),
-                "why_not_fixed": "Upstream extraction completeness.",
+                "why_not_fixed": (
+                    "The missing months are absent upstream, not dropped "
+                    "downstream -- the rows exist in fundamentals_monthly and "
+                    "the metric columns are empty. Fixing it means re-extracting "
+                    "the filing history for these tickers. The pipeline already "
+                    "handles the consequence correctly by withholding rather "
+                    "than imputing, so this affects breadth of coverage rather "
+                    "than correctness of what is reported."
+                ),
             })
     elif withheld:
         counts = withheld.get("withheld_counts", {})
@@ -506,19 +560,44 @@ def collect_caveats(json_dir: str) -> list[dict]:
                 "why_not_fixed": "The series is not in the database.",
             })
         if ci:
+            # A sibling of `return_path`, not a member of it: `rp` below is
+            # bound to report["return_path"], so reading the rolling block off
+            # it always yields nothing.
+            roll = report.get("rolling_36m") or {}
+            width = (ci['ci_high'] - ci['ci_low']) * 100
+            if roll.get("available"):
+                stability = (
+                    f" The window analysis says how much of that is spread: of "
+                    f"{roll['windows']} overlapping 36-month stretches, "
+                    f"{roll['windows_positive_cagr']} compounded positively "
+                    f"({roll['pct_windows_positive_cagr']}%), with a median of "
+                    f"{roll['median_cagr'] * 100:.1f}% and a range of "
+                    f"{roll['min_cagr'] * 100:.1f}% to "
+                    f"{roll['max_cagr'] * 100:.1f}%. The worst was "
+                    f"{roll['worst_window']['from']} to "
+                    f"{roll['worst_window']['to']}, the best "
+                    f"{roll['best_window']['from']} to "
+                    f"{roll['best_window']['to']}. A reader starting at an "
+                    f"arbitrary date would have experienced the median, not the "
+                    f"headline."
+                )
+            else:
+                stability = ""
             entries.append({
                 "id": "precision_of_the_headline",
                 "severity": "high",
                 "statement": (
                     f"The {ci['point'] * 100:.2f}% CAGR point estimate has a "
                     f"95% interval of {ci['ci_low'] * 100:.2f}% to "
-                    f"{ci['ci_high'] * 100:.2f}%. The interval is roughly 30 "
-                    "points wide: 149 monthly returns cannot pin down a growth "
-                    "rate more precisely than that."
+                    f"{ci['ci_high'] * 100:.2f}%. The interval is roughly "
+                    f"{width:.0f} points wide: 149 monthly returns cannot pin "
+                    "down a growth rate more precisely than that." + stability
                 ),
                 "why_not_fixed": (
-                    "A longer out-of-sample history would narrow it. Extending "
-                    "the sample is the only honest route."
+                    "A longer out-of-sample history would narrow it, and no "
+                    "amount of statistics manufactures months that did not "
+                    "happen. The rolling windows narrow the practical uncertainty "
+                    "without pretending the sample grew."
                 ),
             })
         r2 = vb.get("r_squared")
@@ -579,8 +658,14 @@ def collect_caveats(json_dir: str) -> list[dict]:
                     "benefit is not."
                 ),
                 "why_not_fixed": (
-                    "A sector- or factor-neutral book would lower both, at the "
-                    "cost of the return. Not a bug, a design choice to disclose."
+                    "Tested, and the obvious remedy does not work. Re-running "
+                    "the allocator with the sector cap tightened from 30% to 8% "
+                    "left R-squared at 76-79% the whole way while beta fell "
+                    "1.04 to 0.75 and CAGR fell 29.6% to 20.7%. Sector "
+                    "concentration is not the cause; the correlation is what a "
+                    "long-only equity book is. Lowering it needs shorting or "
+                    "hedging the index, which is a different strategy rather "
+                    "than a fix to this one."
                 ),
             })
         cv = rp.get("cvar_95_monthly")
