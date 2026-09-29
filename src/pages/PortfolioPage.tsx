@@ -42,6 +42,27 @@ export function PortfolioPage() {
   // reflects the rows the UI actually shows.
   const actionableTrades = trades.filter((t) => t.signal_type !== "HOLD");
 
+  /**
+   * Holdings are the rows that actually hold weight.
+   *
+   * A target row can exist for a symbol whose weight resolved to zero — the
+   * 5% cap and the renormalisation can leave a name with nothing, and a factor
+   * sleeve carrying a 0% allocation contributes 0 to every name in it. Those
+   * rows are rebalance instructions, not positions, and counting them made
+   * "Total Positions" exceed the number of names in the book.
+   */
+  const held = targets.filter((t) => (t.target_weight ?? 0) > 0);
+  const zeroWeightRows = targets.length - held.length;
+
+  /**
+   * Idle weight is left in cash rather than forced into a name, so the target
+   * weights sum to less than 1 in most months. The exposure chart normalises
+   * over invested weight, which made the book look fully deployed when up to
+   * 17% of it earned nothing. The figure is stated rather than absorbed.
+   */
+  const invested = held.reduce((s, t) => s + (t.target_weight ?? 0), 0);
+  const cash = Math.max(0, 1 - invested);
+
   const sectorData = sectorExposure.slice(0, SECTOR_DONUT_SLICE).map((s) => ({
     label: s.sector,
     value: s.weight,
@@ -58,13 +79,28 @@ export function PortfolioPage() {
       </div>
 
       {/* Top Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-4">
         <StatCard
           label="Total Positions"
-          value={targets.length}
-          subvalue="Active stocks"
+          value={held.length}
+          subvalue={
+            zeroWeightRows > 0
+              ? `plus ${zeroWeightRows} zero-weight row${zeroWeightRows === 1 ? "" : "s"}`
+              : "Active stocks"
+          }
           icon={<Briefcase className="w-5 h-5" />}
           color="blue"
+        />
+        <StatCard
+          label="Invested"
+          value={formatPercent(invested)}
+          subvalue={
+            cash > 0.0005
+              ? `${formatPercent(cash)} held as cash`
+              : "fully deployed"
+          }
+          icon={<Briefcase className="w-5 h-5" />}
+          color={cash > 0.05 ? "amber" : "green"}
         />
         <StatCard
           label="BUY Signals"
@@ -91,7 +127,11 @@ export function PortfolioPage() {
 
       {/* Portfolio Table + Sector Donut */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <Card title="Current Target Portfolio" subtitle={`${targets.length} positions — ${targets[0]?.month || ""}`} className="lg:col-span-2">
+        <Card
+          title="Current Target Portfolio"
+          subtitle={`${held.length} positions — ${targets[0]?.month || ""}`}
+          className="lg:col-span-2"
+        >
           <Table
             columns={[
               { key: "symbol", label: "Symbol" },
@@ -117,8 +157,8 @@ export function PortfolioPage() {
           title="Sector Exposure"
           subtitle={
             sectorExposure.length > SECTOR_DONUT_SLICE
-              ? `Top ${SECTOR_DONUT_SLICE} of ${sectorExposure.length} sectors by weight`
-              : "Weight by sector"
+              ? `Top ${SECTOR_DONUT_SLICE} of ${sectorExposure.length} sectors, share of invested weight`
+              : "Share of invested weight"
           }
         >
           <DonutChart
@@ -126,6 +166,14 @@ export function PortfolioPage() {
             centerLabel="Sectors"
             centerValue={String(sectorData.length)}
           />
+          {cash > 0.0005 && (
+            <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+              Slices are shares of the {formatPercent(invested)} that is
+              invested. The remaining {formatPercent(cash)} is held as cash and
+              earns nothing, so it is deliberately absent from the ring rather
+              than shown as a zero-weight sector.
+            </p>
+          )}
         </Card>
       </div>
 

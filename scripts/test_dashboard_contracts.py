@@ -261,6 +261,88 @@ def test_regime_warmup_months_are_labelled_not_scored():
         )
 
 
+def test_eod_monthly_aggregates_are_idempotent():
+    """`daily_count` and `monthly_volume` must not grow on repeated runs.
+
+    `refresh_stock_month` used to add the stored day's count and volume onto
+    the value already in the row, with a `baseline_eod` filter that is absent
+    on a normal run. Every scheduled invocation therefore re-added the whole
+    month, and by 2026-09 the count had reached 37-38 against 5 stored trading
+    days, with volume up to 8.5x true. The error compounded daily, so a table
+    read a month later was further wrong than one read a week earlier.
+
+    Both are now derived from `stock_prices_daily`, which makes the function
+    idempotent. This asserts the resulting invariant: neither figure may exceed
+    what the daily table actually contains for that month.
+    """
+    import sqlite3
+    db = os.path.join(ROOT, "data_input", "processed_financial_data.sqlite")
+    if not os.path.exists(db):
+        return
+    conn = sqlite3.connect(db)
+    try:
+        months = [r[0] for r in conn.execute(
+            "SELECT DISTINCT month FROM stock_prices_monthly ORDER BY month DESC LIMIT 6")]
+        problems = []
+        for month in months:
+            prefix = str(month)[:7]
+            real_days = conn.execute(
+                "SELECT COUNT(DISTINCT date) FROM stock_prices_daily WHERE substr(date,1,7)=?",
+                (prefix,)).fetchone()[0]
+            if not real_days:
+                continue
+            lo, hi = conn.execute(
+                "SELECT MIN(daily_count), MAX(daily_count) FROM stock_prices_monthly WHERE month=?",
+                (month,)).fetchone()
+            if hi and hi > real_days:
+                problems.append(
+                    f"{month}: daily_count up to {hi} against {real_days} stored days")
+        assert not problems, (
+            "monthly aggregates were accumulated instead of recomputed, so they "
+            "exceed the daily data: " + "; ".join(problems)
+        )
+    finally:
+        conn.close()
+
+
+def test_portfolio_cash_is_accounted_for():
+    """Idle weight must be visible, not silently absorbed by a renormalised chart.
+
+    Target weights sum to less than 1 in most months because unallocated weight
+    is left in cash rather than forced into a name. The exposure chart divides
+    by invested weight, so without a published cash figure the book reads as
+    fully deployed when up to 17% of it earned nothing.
+    """
+    pt = _rows("portfolio_targets")
+    if not pt:
+        return
+    by_month = defaultdict(list)
+    for t in pt:
+        by_month[t["month"]].append(t)
+
+    worst_cash, worst_month = 0.0, None
+    for m, rows in by_month.items():
+        invested = sum(float(r.get("target_weight") or 0) for r in rows)
+        cash = max(0.0, 1.0 - invested)
+        if cash > worst_cash:
+            worst_cash, worst_month = cash, m
+
+    cc_path = os.path.join(DATA, "portfolio_constraint_compliance.json")
+    assert os.path.exists(cc_path), "cash is not published anywhere"
+    with open(cc_path, encoding="utf-8") as fh:
+        cc = json.load(fh)
+    assert "cash" in cc.get("months", {}).get(worst_month, {}), (
+        f"{worst_month} leaves {worst_cash:.2%} uninvested but no cash figure is published"
+    )
+    # And the reported cash must match the shortfall implied by the weights.
+    for m, rows in by_month.items():
+        invested = sum(float(r.get("target_weight") or 0) for r in rows)
+        rep = cc["months"].get(m, {}).get("cash")
+        if rep is not None and abs((1 - invested) - rep) > 1e-3:
+            raise AssertionError(
+                f"{m}: weights imply cash {1-invested:.4f} but {rep:.4f} is reported")
+
+
 def _main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

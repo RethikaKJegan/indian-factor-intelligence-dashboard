@@ -159,35 +159,63 @@ export function FactorPage() {
         <div className="space-y-6">
           <Card title="Risk Diagnostics" subtitle="Latest month factor risk metrics">
             <div className="grid grid-cols-2 gap-4">
-              <StatCard
-                label="Max Eigenvalue Share"
-                value={latestDiag ? formatPercent(latestDiag.max_eigenvalue_share) : "—"}
-                subvalue="Concentration of risk"
-                icon={<Activity className="w-5 h-5" />}
-                color="amber"
-              />
-              <StatCard
-                label="Effective Factors"
-                value={latestDiag ? formatNumber(latestDiag.effective_independent_factors) : "—"}
-                subvalue="Independent signals"
-                icon={<Layers className="w-5 h-5" />}
-                color="blue"
-              />
+              {/*
+                One concentration measure, shown once.
+
+                `risk_concentration_score` is the same quantity as
+                `max_eigenvalue_share` — the pipeline assigns one to the other
+                — and the page was rendering both as separate cards, so the
+                same number appeared twice under two names and read as a
+                copy-paste error. The share now appears once, with the
+                independent-signal count beside it, since the pair is what
+                actually conveys the finding: a high share and an effective
+                count near 1 together mean one direction carries the risk.
+              */}
               <StatCard
                 label="Risk Concentration"
-                value={latestDiag ? formatPercent(latestDiag.risk_concentration_score) : "—"}
-                subvalue="Portfolio risk focus"
+                value={
+                  latestDiag
+                    ? formatPercent(
+                        latestDiag.max_eigenvalue_share ??
+                          latestDiag.risk_concentration_score,
+                      )
+                    : "—"
+                }
+                subvalue="share of variance in the top mode"
                 icon={<Grid3x3 className="w-5 h-5" />}
                 color="red"
               />
               <StatCard
+                label="Effective Factors"
+                value={latestDiag ? formatNumber(latestDiag.effective_independent_factors) : "—"}
+                subvalue="of 4, after correlation"
+                icon={<Layers className="w-5 h-5" />}
+                color="blue"
+              />
+              <StatCard
                 label="Redundancy Score"
                 value={latestDiag ? formatPercent(latestDiag.redundancy_score) : "—"}
-                subvalue="Factor overlap"
+                subvalue="factor overlap"
                 icon={<TrendingUp className="w-5 h-5" />}
                 color="amber"
               />
+              <StatCard
+                label="Observations"
+                value={latestDiag?.observation_count ?? "—"}
+                subvalue="months behind this figure"
+                icon={<Activity className="w-5 h-5" />}
+                color={
+                  latestDiag && latestDiag.observation_count < 12 ? "amber" : "slate"
+                }
+              />
             </div>
+            <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+              These are conditional on the months carrying the current regime
+              label. A regime seen once has no covariance to estimate, so the
+              pipeline falls back to independent factors at a prior volatility
+              and the figures below degenerate — the observation count is shown
+              so that case is visible rather than reading as a clean result.
+            </p>
           </Card>
         </div>
       </div>

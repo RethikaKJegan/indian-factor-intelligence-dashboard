@@ -37,6 +37,19 @@ export function RegimePage() {
   const xLabels = regimes.map((r) => r.month);
   // Diagnostic carried on the newest record only.
   const separation = [...regimes].reverse().find((r) => r.cluster_separation)?.cluster_separation;
+
+  /**
+   * Warm-up months the walk-forward model could not score.
+   *
+   * The history spans 153 months but the model only emits an opinion for the
+   * months after its first training window. Reporting "153 months" implied 153
+   * model judgements; the scored count is stated so the reader can see the
+   * difference, and the charts below leave the unscored months blank instead
+   * of drawing them as zero.
+   */
+  const scoredCount = regimes.filter((r) => !r.is_warmup).length;
+  const warmupCount = regimes.length - scoredCount;
+
   const probData = [
     { label: "Bull", values: regimes.map((r) => r.prob_bull_expansion) },
     { label: "Bear", values: regimes.map((r) => r.prob_bear_stress) },
@@ -144,9 +157,13 @@ export function RegimePage() {
           }
         />
         <StatCard
-          label="Total Months"
-          value={regimes.length}
-          subvalue={`${counts["Bull / Expansion"] || 0} Bull, ${counts["Bear / Stress"] || 0} Bear`}
+          label="Months Scored"
+          value={scoredCount}
+          subvalue={
+            warmupCount > 0
+              ? `${warmupCount} of ${regimes.length} unscored (warm-up)`
+              : `${counts["Bull / Expansion"] || 0} Bull, ${counts["Bear / Stress"] || 0} Bear`
+          }
           icon={<BarChart3 className="w-5 h-5" />}
           color="slate"
         />

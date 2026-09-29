@@ -477,14 +477,30 @@ def refresh_stock_month(conn: sqlite3.Connection, date_value: dt.date, baseline_
         sector = universe.loc[universe["symbol"] == sym, "sector"]
         previous = prev_close.get(sym)
         close = float(latest["close"])
-        existing_volume = float(old.get("monthly_volume") or 0)
-        existing_count = int(old.get("daily_count") or 0)
-        if baseline_eod:
-            new_group = group[pd.to_datetime(group["date"]).dt.date > baseline_eod]
-        else:
-            new_group = group
-        volume = existing_volume + float(new_group["volume"].fillna(0).sum()) if old else float(group["volume"].fillna(0).sum())
-        daily_count = existing_count + len(new_group["date"].unique()) if old else len(group["date"].unique())
+        # `daily_count` and `monthly_volume` are RECOMPUTED from the daily table
+        # for this month, never accumulated onto the previous row.
+        #
+        # This used to be `existing_count + len(new_group)` with
+        # `new_group = group[date > baseline_eod]`. The baseline is absent on a
+        # normal run, so `new_group` was the whole month and both figures grew
+        # again on every invocation: by 2026-09 the count had reached 37-38
+        # against 5 stored trading days, and monthly volume was up to 8.5x its
+        # true value. The error compounded on every scheduled run, so a table
+        # read a month later was further wrong than one read a week later.
+        #
+        # Deriving both from the stored rows makes the function idempotent:
+        # running it twice with the same input produces the same output, which
+        # is the property a daily job actually needs.
+        #
+        # `baseline_eod` is now unused in this function and the parameter is
+        # kept only so existing callers do not break. The CLI flag
+        # `--baseline-eod` is still parsed, but it no longer influences any
+        # published figure. Leaving that unstated would repeat the fault this
+        # comment is correcting: a comment that describes something the code no
+        # longer does.
+        group_dates = pd.to_datetime(group["date"]).dt.date
+        daily_count = int(group_dates.nunique())
+        volume = float(group["volume"].fillna(0).sum())
         monthly_return = (close / previous - 1) if previous and previous > 0 else old.get("monthly_return")
         rolling_high = max(close, float(old.get("monthly_close") or close))
         drawdown = close / rolling_high - 1 if rolling_high else 0

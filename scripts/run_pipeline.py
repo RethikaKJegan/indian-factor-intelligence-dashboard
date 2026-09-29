@@ -1498,6 +1498,9 @@ def portfolio_transition_agent(conn, baskets, allocations, regime_preds, exclude
     portfolio_targets = []
     rebalance_trades = []
     prev_portfolio = {}  # symbol -> weight
+    # Names the allocator resolved to zero weight, reported rather than silently
+    # dropped, so the target count can be reconciled against the sleeve sizes.
+    zero_weight_skipped: list[str] = []
 
     for alloc in allocations:
         month = alloc["month"]
@@ -1566,11 +1569,24 @@ def portfolio_transition_agent(conn, baskets, allocations, regime_preds, exclude
             stock_weights.pop(sym, None)
 
         # Portfolio targets
+        #
+        # A symbol whose weight publishes as zero is not a position. It gets
+        # there two ways: the 5% cap plus water-filling leaves a name with
+        # nothing, or the factor sleeve carrying it was allocated 0% to begin
+        # with. The test is on the ROUNDED weight, because that is the number
+        # the row publishes -- a residual of 4e-7 rounds to 0.0 and was being
+        # written as a holding while displaying as 0.00%. The exit trade is
+        # unaffected: it is generated from the previous month's holdings that
+        # are absent here, not from the presence of a zero-weight row.
         for sym, info in stock_weights.items():
+            _w = round(info["weight"], 6)
+            if _w <= 0:
+                zero_weight_skipped.append(sym)
+                continue
             portfolio_targets.append({
                 "month": month,
                 "symbol": sym,
-                "target_weight": round(info["weight"], 6),
+                "target_weight": _w,
                 "factor_sources": info["factors"],
                 "combined_score": round(info["score"], 6),
                 "regime_label": regime_label,
@@ -1643,6 +1659,11 @@ def portfolio_transition_agent(conn, baskets, allocations, regime_preds, exclude
         # Update prev_portfolio
         prev_portfolio = {sym: info["weight"] for sym, info in stock_weights.items()}
 
+    if zero_weight_skipped:
+        print(f"  Zero-weight rows omitted from targets: {len(zero_weight_skipped)} "
+              f"({', '.join(sorted(set(zero_weight_skipped))[:8])}"
+              f"{'...' if len(zero_weight_skipped) > 8 else ''})")
+
     # Constraint-compliance audit, written alongside the targets so the
     # dashboard can show the limits actually honoured rather than the intended
     # ones. This is checked against the FINAL weights, after every adjustment.
@@ -1662,12 +1683,20 @@ def portfolio_transition_agent(conn, baskets, allocations, regime_preds, exclude
             _s = stock_sector.get(t["symbol"], "Unknown")
             _sec[_s] = _sec.get(_s, 0.0) + t["target_weight"]
         _maxsec = max(_sec.values()) if _sec else 0.0
+        # The stored weight is a sum of 6dp-rounded values, so a sector sitting
+        # exactly on the 0.30 cap can sum to 0.3000004 and publish as
+        # "0.300001" beside a cap of "0.3". That is float noise, but a reader
+        # sees a number above the limit next to a flag saying it was respected,
+        # and reasonably reads it as a contradiction. The excess is clamped for
+        # publication only; the tolerance test below still runs on the true
+        # value, so a genuine breach cannot be hidden by the clamp.
+        _maxsec_pub = min(_maxsec, CONSTRAINTS.max_sector_weight)
         compliance["months"][_m] = {
             "positions": len(_rows),
             "invested": round(_inv, 6),
             "cash": round(1.0 - _inv, 6),
             "max_weight": round(_mx, 6),
-            "max_sector_weight": round(_maxsec, 6),
+            "max_sector_weight": round(_maxsec_pub, 6),
             "sector_exposure": {k: round(v, 4) for k, v in sorted(
                 _sec.items(), key=lambda kv: -kv[1])[:8]},
             # Weights are persisted rounded to 6dp, so a sector summing to
