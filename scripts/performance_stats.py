@@ -440,10 +440,52 @@ def cost_scenario_table(
     return out
 
 
+def excess_returns(rets: list[float], rf_monthly: list[float]) -> list[float]:
+    """Monthly returns minus the risk-free rate for that same month.
+
+    Taking the difference month by month, rather than subtracting a single
+    annual figure once, is what makes a variable rate meaningful. It also
+    changes the volatility the ratio is measured against: subtracting a
+    constant from every month scales the mean but not the spread, whereas
+    subtracting the actual rate each month moves the spread too, and the
+    resulting Sharpe is the one a reader would compute by hand.
+    """
+    if not rets:
+        return []
+    n = min(len(rets), len(rf_monthly)) if rf_monthly else len(rets)
+    return [rets[i] - (rf_monthly[i] if rf_monthly else 0.0) for i in range(n)]
+
+
+def sharpe_from_excess(excess: list[float]) -> float:
+    """Annualised Sharpe of an excess-return series."""
+    n = len(excess)
+    if n < 2:
+        return 0.0
+    mean = sum(excess) / n
+    var = sum((x - mean) ** 2 for x in excess) / (n - 1)
+    vol = math.sqrt(var) * math.sqrt(12)
+    return (mean * 12) / vol if vol > 0 else 0.0
+
+
+def sortino_from_excess(excess: list[float]) -> float:
+    """Annualised Sortino of an excess-return series, downside over all periods."""
+    n = len(excess)
+    if n < 2:
+        return 0.0
+    mean = sum(excess) / n
+    downside = [min(0.0, x) for x in excess]
+    denom = (sum(d * d for d in downside) / n) ** 0.5
+    if denom <= 0:
+        return 0.0
+    return (mean * 12) / (denom * math.sqrt(12))
+
+
 def full_report(
     rows: list[dict],
     bench_by_month: dict[str, float],
     rf_annual: float = RISK_FREE_ANNUAL,
+    rf_rates: dict[str, float] | None = None,
+    rf_meta: dict | None = None,
 ) -> dict:
     """Assemble the section 21-23 report from a stock-level return path.
 
@@ -471,17 +513,57 @@ def full_report(
             bench.append(cur / prev - 1.0)
             aligned_rets.append(rets[i])
 
-    report: dict = {
-        "risk_free_assumption": {
+    # Prefer the measured month-by-month rate. `rf_rates` is the real Indian
+    # 10-year G-Sec series; `rf_annual` is only a fallback for when it is
+    # missing, and the report says which one produced the headline number.
+    measured = bool(rf_rates)
+    if measured:
+        rf_monthly = []
+        for m in months:
+            annual = rf_rates.get(m)
+            if annual is None:
+                rf_monthly.append(0.0)
+            else:
+                rf_monthly.append((1.0 + annual) ** (1.0 / 12.0) - 1.0)
+        excess = excess_returns(rets, rf_monthly)
+        sharpe_rf = sharpe_from_excess(excess)
+        sortino_rf = sortino_from_excess(excess)
+    else:
+        sharpe_rf = sharpe_at(rets, rf_annual)
+        sortino_rf = sortino_at(rets, rf_annual)
+
+    if rf_meta is not None:
+        rf_block = {
+            "is_measured": True,
+            "annual": round(rf_meta.get("mean_annual") or 0.0, 6),
+            "monthly": round((1.0 + (rf_meta.get("mean_annual") or 0.0)) ** (1.0 / 12.0) - 1.0, 6),
+            "is_assumption_not_data": False,
+            "instrument": rf_meta.get("instrument"),
+            "source_column": rf_meta.get("source_column"),
+            "mean_annual": rf_meta.get("mean_annual"),
+            "min_annual": rf_meta.get("min_annual"),
+            "max_annual": rf_meta.get("max_annual"),
+            "months_observed": rf_meta.get("months_observed"),
+            "months_carried_forward": rf_meta.get("months_carried_forward"),
+            "months_total": rf_meta.get("months_total"),
+            "coverage_pct": rf_meta.get("coverage_pct"),
+            "applied": rf_meta.get("applied"),
+            "note": rf_meta.get("note"),
+        }
+    else:
+        rf_block = {
+            "is_measured": False,
             "annual": rf_annual,
             "monthly": round((1.0 + rf_annual) ** (1.0 / 12.0) - 1.0, 6),
             "is_assumption_not_data": True,
-            "note": "No Treasury-bill or G-Sec series exists in the source data. "
-                    "This rate is an assumption inside the range of Indian 10-year "
-                    "G-Sec yields over the backtest window; Sharpe is reported "
-                    "against both this and a zero rate so the reader can see how "
-                    "much of the number is the assumption.",
-        },
+            "note": "No risk-free series was available, so a constant rate is "
+                    "assumed. Sharpe is reported against both this and a zero "
+                    "rate so the reader can see how much of the number depends "
+                    "on the choice.",
+        }
+
+    report: dict = {
+        "risk_free_assumption": rf_block,
         "return_path": {
             "months": len(rets),
             "cvar_95_monthly": round(cvar(rets, 0.95), 6),
@@ -499,15 +581,25 @@ def full_report(
             "excess_kurtosis": round(_kurtosis(rets), 4),
         },
         "risk_adjusted": {
-            "sharpe_vs_rf": round(sharpe_at(rets, rf_annual), 4),
+            "sharpe_vs_rf": round(sharpe_rf, 4),
             "sharpe_vs_zero": round(sharpe_at(rets, 0.0), 4),
-            "sortino_vs_rf": round(sortino_at(rets, rf_annual), 4),
+            "sortino_vs_rf": round(sortino_rf, 4),
             "sortino_vs_zero": round(sortino_at(rets, 0.0), 4),
+            "sharpe_basis": (
+                "measured Indian 10-year G-Sec, applied month by month"
+                if measured
+                else f"constant assumed rate of {rf_annual * 100:.2f}%"
+            ),
         },
     }
 
     if len(bench) >= 3:
-        capm = beta_alpha(aligned_rets, bench, rf_annual)
+        # Jensen's alpha is a regression on returns net of the risk-free rate,
+        # so it must use the same rate as the headline Sharpe. With a measured
+        # series that is the window mean, since a single regression intercept
+        # cannot absorb a varying rate.
+        capm_rf = (rf_meta or {}).get("mean_annual") if measured else rf_annual
+        capm = beta_alpha(aligned_rets, bench, capm_rf or 0.0)
         r2 = capm.get("r_squared") or 0.0
         report["vs_benchmark"] = {
             "benchmark": "NIFTY 200",
@@ -539,10 +631,27 @@ def full_report(
             ),
         }
 
-    for stat in ("sharpe", "cagr"):
-        ci = bootstrap_ci(rets, stat, rf_annual=rf_annual)
-        if ci:
-            report.setdefault("confidence_intervals", {})[stat] = ci
+    # The Sharpe interval must be computed on the same excess-return series the
+    # headline Sharpe uses. Bootstrapping the raw returns against a single
+    # constant rate would produce an interval around a different quantity from
+    # the point estimate sitting next to it.
+    if measured:
+        # rf_annual=0 because `excess` is already net of the monthly rate;
+        # subtracting another constant would double-count it.
+        ci_sharpe = bootstrap_ci(
+            excess, "sharpe", rf_annual=0.0,
+            n_boot=BOOTSTRAP_SAMPLES, level=CI_LEVEL, seed=BOOTSTRAP_SEED,
+        )
+        if ci_sharpe:
+            ci_sharpe["basis"] = "moving-block bootstrap of the measured excess-return series"
+    else:
+        ci_sharpe = bootstrap_ci(rets, "sharpe", rf_annual=rf_annual)
+    if ci_sharpe:
+        report.setdefault("confidence_intervals", {})["sharpe"] = ci_sharpe
+
+    ci_cagr = bootstrap_ci(rets, "cagr")
+    if ci_cagr:
+        report.setdefault("confidence_intervals", {})["cagr"] = ci_cagr
     return report
 
 

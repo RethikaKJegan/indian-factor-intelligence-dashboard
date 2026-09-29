@@ -384,10 +384,76 @@ def collect_caveats(json_dir: str) -> list[dict]:
             ),
         })
 
+    audit = load("fundamental_coverage_audit")
     withheld = load("factor_coverage_withheld")
-    if withheld:
+    if audit and audit.get("available"):
+        sc = audit.get("summary", {})
+        bc = sc.get("by_classification", {})
+        struct = [s for s in audit.get("symbols", [])
+                  if s.get("classification") == "structurally_excluded"]
+        gap = [s for s in audit.get("symbols", [])
+               if s.get("classification") == "unexplained_gap"]
+        sectors = audit.get("structurally_excluded_sectors", [])
+        total = sc.get("total_symbols", 0) or 1
+        n_struct = bc.get("structurally_excluded", 0)
+        n_sparse = bc.get("sparse", 0)
+        n_gap = bc.get("unexplained_gap", 0)
+        withheld_n = 0
+        if withheld:
+            withheld_n = sum((withheld.get("withheld_counts") or {}).values())
+
+        caveats.append({
+            "id": "fundamental_factors_skip_the_whole_banking_sector",
+            "severity": "medium",
+            "statement": (
+                f"{n_struct} of {total} symbols "
+                f"({100.0 * n_struct / total:.0f}%) are structurally invisible "
+                f"to the Value and Quality factors. They are all in "
+                f"{', '.join(sectors) or 'a non-comparable sector'}: a bank has "
+                "no revenue line to grow and deposits are not debt in the sense "
+                f"debt/equity assumes. {withheld_n:,} factor score-months are "
+                "withheld, and this is the largest single cause -- not missing "
+                "data, but a sector whose reporting conventions do not map onto "
+                "the metrics. Momentum and Low Volatility are price-based and "
+                "still cover these names."
+            ),
+            "why_not_fixed": (
+                "Fixing it needs bank-specific metrics (NIM, GNPA, NPA ratio, "
+                "PCR, CASA) sourced from filings, and equity metrics that are "
+                "comparable across the two sector types. Adding them is a data "
+                "acquisition project, not a calculation change."
+            ),
+        })
+        if n_gap:
+            caveats.append({
+                "id": "fundamental_ingestion_gaps",
+                "severity": "medium",
+                "statement": (
+                    f"{n_gap} symbols ({', '.join(g['symbol'] for g in gap)}) "
+                    "have fundamental rows but no populated metric in any month. "
+                    "Unlike the banks, this is an ingestion gap rather than an "
+                    "economic fact, and it is probably a recent listing with no "
+                    "extracted history."
+                ),
+                "why_not_fixed": (
+                    "Upstream extraction. The coverage rule correctly withholds "
+                    "their scores rather than guessing from partial data."
+                ),
+            })
+        if n_sparse:
+            caveats.append({
+                "id": "sparse_fundamental_coverage",
+                "severity": "low",
+                "statement": (
+                    f"{n_sparse} symbols carry metrics in fewer than half their "
+                    "months, so the coverage rule withholds their score in most "
+                    "months and they contribute unevenly to the factors."
+                ),
+                "why_not_fixed": "Upstream extraction completeness.",
+            })
+    elif withheld:
         counts = withheld.get("withheld_counts", {})
-        total = sum(counts.values())
+        total_w = sum(counts.values())
         caveats.append({
             "id": "factor_coverage",
             "severity": "medium",
@@ -395,13 +461,9 @@ def collect_caveats(json_dir: str) -> list[dict]:
                 f"{total:,} factor scores were withheld rather than computed "
                 f"from incomplete data ({', '.join(f'{k} {v:,}' for k, v in counts.items())}). "
                 "Where a metric is missing the score is absent, so the effective "
-                "universe for that factor is smaller than the nominal one and "
-                "the factor is not measured on the same names every month."
+                "universe for that factor is smaller than the nominal one."
             ),
-            "why_not_fixed": (
-                "The underlying metrics are not in the source data. Columns for "
-                "ROE, ROCE, P/B and EV/EBITDA exist but are 0% populated."
-            ),
+            "why_not_fixed": "The underlying metrics are not in the source data.",
         })
 
     report = load("backtest_performance_report")
@@ -410,18 +472,39 @@ def collect_caveats(json_dir: str) -> list[dict]:
         rf = report.get("risk_free_assumption", {})
         vb = report.get("vs_benchmark", {})
         rp = report.get("return_path", {})
-        entries = [{
-            "id": "risk_free_rate_is_an_assumption",
-            "severity": "high",
-            "statement": (
-                f"No Treasury-bill or G-Sec series exists in the source data, "
-                f"so Sharpe against a {rf.get('annual', 0) * 100:.1f}% Indian "
-                "risk-free rate is an assumption, not a measurement. Against a "
-                "zero rate the same returns give a materially higher Sharpe. "
-                "Both are reported."
-            ),
-            "why_not_fixed": "The series is not in the database.",
-        }]
+        entries = []
+        if rf.get("is_measured"):
+            entries.append({
+                "id": "risk_free_rate_is_measured_but_backwards_looking",
+                "severity": "low",
+                "statement": (
+                    f"Sharpe is computed against the measured Indian 10-year "
+                    f"G-Sec yield from macro_monthly, averaging "
+                    f"{(rf.get('mean_annual') or 0) * 100:.2f}% over the window "
+                    f"and spanning {(rf.get('min_annual') or 0) * 100:.2f}% to "
+                    f"{(rf.get('max_annual') or 0) * 100:.2f}%. It is applied "
+                    f"month by month, not as a single average. One caveat "
+                    f"remains: the series is a yield, so it is a contemporaneous "
+                    f"rate rather than a return actually earned in that month, "
+                    f"which slightly overstates the excess return in a risk-off "
+                    f"period when yields fall alongside prices."
+                ),
+                "why_not_fixed": (
+                    "A realised total-return index on 10-year G-Secs would be "
+                    "the correct benchmark, and no such series is in the database."
+                ),
+            })
+        else:
+            entries.append({
+                "id": "risk_free_rate_is_an_assumption",
+                "severity": "high",
+                "statement": (
+                    "No risk-free series was found, so Sharpe against a constant "
+                    f"rate of {(rf.get('annual') or 0) * 100:.2f}% is an "
+                    "assumption rather than a measurement."
+                ),
+                "why_not_fixed": "The series is not in the database.",
+            })
         if ci:
             entries.append({
                 "id": "precision_of_the_headline",

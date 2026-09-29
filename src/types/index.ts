@@ -424,10 +424,29 @@ export interface BootstrapCI {
  * excess-of-nothing one.
  */
 export interface PerformanceReport {
+  /**
+   * The rate Sharpe is computed against.
+   *
+   * `is_measured` is the important field. It was once false — there was a
+   * hard-coded 6.5% and a note claiming no series existed. `macro_monthly`
+   * carries the RBI 10-year G-Sec yield for every month of the backtest, so it
+   * is measured now, and the measured mean is higher than the assumption was.
+   */
   risk_free_assumption: {
+    is_measured: boolean;
+    is_assumption_not_data: boolean;
     annual: number;
     monthly: number;
-    is_assumption_not_data: boolean;
+    instrument?: string | null;
+    source_column?: string | null;
+    mean_annual?: number;
+    min_annual?: number;
+    max_annual?: number;
+    months_observed?: number;
+    months_carried_forward?: number;
+    months_total?: number;
+    coverage_pct?: number;
+    applied?: string;
     note: string;
   };
   return_path: {
@@ -447,6 +466,8 @@ export interface PerformanceReport {
     sharpe_vs_zero: number;
     sortino_vs_rf: number;
     sortino_vs_zero: number;
+    /** Which rate produced `sharpe_vs_rf`: the measured series or a constant. */
+    sharpe_basis?: string;
   };
   vs_benchmark: {
     benchmark: string;
@@ -471,6 +492,38 @@ export interface PerformanceReport {
   };
   confidence_intervals: Partial<Record<"sharpe" | "cagr" | "mean", BootstrapCI>>;
   cost_model: { bps: number; label: string };
+}
+
+/** One symbol's fundamental-data status, and why it is what it is. */
+export interface CoverageSymbol {
+  symbol: string;
+  sector: string;
+  months_with_rows: number;
+  months_with_any_metric: number;
+  coverage_pct: number;
+  classification: "measured" | "sparse" | "structurally_excluded" | "unexplained_gap";
+  reason: string;
+}
+
+/**
+ * Why each symbol is or is not visible to the fundamental factors.
+ *
+ * This is the cause behind the withheld-score count. Most of the withheld
+ * volume is not a data outage: it is the entire banking sector, which reports
+ * on conventions that do not map onto P/E, revenue growth or debt/equity.
+ */
+export interface FundamentalCoverageAudit {
+  available: boolean;
+  window?: { from: string; to: string };
+  summary: {
+    total_symbols: number;
+    by_classification: Record<string, number>;
+    structural_sector_exposure_pct: number;
+  };
+  structurally_excluded_sectors: string[];
+  unexplained: string[];
+  symbols: CoverageSymbol[];
+  note: string;
 }
 
 /**

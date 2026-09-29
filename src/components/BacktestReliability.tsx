@@ -55,14 +55,60 @@ export function BacktestReliability() {
 
   return (
     <div className="space-y-4">
-      {/* The assumption that moves the headline number. */}
-      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4">
-        <h3 className="text-sm font-semibold text-amber-900">
-          Sharpe depends on a rate this dataset does not contain
-        </h3>
-        <p className="text-xs text-amber-800 mt-1.5 leading-relaxed">
-          {rf.note}
-        </p>
+      {/* The rate the risk-adjusted numbers are computed against. */}
+      <div
+        className={`rounded-xl border p-4 ${
+          rf.is_measured
+            ? "border-emerald-300 bg-emerald-50"
+            : "border-amber-300 bg-amber-50"
+        }`}
+      >
+        <div className="flex items-center gap-2 flex-wrap">
+          <span
+            className={`text-[10px] font-medium px-1.5 py-0.5 rounded border ${
+              rf.is_measured
+                ? "bg-emerald-100 text-emerald-700 border-emerald-200"
+                : "bg-amber-100 text-amber-700 border-amber-200"
+            }`}
+          >
+            {rf.is_measured ? "measured" : "assumed"}
+          </span>
+          <h3 className="text-sm font-semibold text-slate-900">
+            {rf.is_measured
+              ? `Risk-free rate: ${rf.instrument ?? "measured series"}`
+              : "Risk-free rate is an assumption"}
+          </h3>
+        </div>
+
+        {rf.is_measured ? (
+          <>
+            <p className="text-xs text-slate-700 mt-1.5 leading-relaxed">
+              Taken from{" "}
+              <code className="text-[11px] bg-white/70 px-1 rounded">
+                {rf.source_column}
+              </code>
+              , which is populated for {rf.months_observed} of{" "}
+              {rf.months_total} months ({rf.coverage_pct}%) of this backtest. It
+              moves between {((rf.min_annual ?? 0) * 100).toFixed(2)}% and{" "}
+              {((rf.max_annual ?? 0) * 100).toFixed(2)}% across the window, so
+              it is applied month by month rather than as a single average.
+            </p>
+            <p className="text-xs text-slate-600 mt-1.5 leading-relaxed">
+              An earlier build used a hard-coded 6.5% on the stated grounds that
+              no series existed. It did. That guess was{" "}
+              <span className="font-medium">
+                {(((rf.mean_annual ?? 0) - 0.065) * 100).toFixed(2)} percentage
+                points
+              </span>{" "}
+              too low, so the headline Sharpe was overstated.
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-slate-700 mt-1.5 leading-relaxed">
+            {rf.note}
+          </p>
+        )}
+
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-3">
           <StatCard
             label="Sharpe (vs 0% rf)"
@@ -71,10 +117,14 @@ export function BacktestReliability() {
             color="slate"
           />
           <StatCard
-            label={`Sharpe (vs ${(rf.annual * 100).toFixed(1)}% rf)`}
+            label={
+              rf.is_measured
+                ? `Sharpe (vs ${((rf.mean_annual ?? 0) * 100).toFixed(1)}% rf)`
+                : `Sharpe (vs ${(rf.annual * 100).toFixed(1)}% rf)`
+            }
             value={formatNumber(ra.sharpe_vs_rf)}
-            subvalue="the more conservative reading"
-            color="amber"
+            subvalue={rf.is_measured ? "measured rate" : "assumed rate"}
+            color={rf.is_measured ? "green" : "amber"}
           />
           <StatCard
             label="Sortino (vs 0% rf)"
@@ -83,10 +133,10 @@ export function BacktestReliability() {
             color="slate"
           />
           <StatCard
-            label={`Sortino (vs ${(rf.annual * 100).toFixed(1)}% rf)`}
+            label="Sortino (vs risk-free)"
             value={formatNumber(ra.sortino_vs_rf)}
-            subvalue="all periods, shortfalls only"
-            color="amber"
+            subvalue={ra.sharpe_basis ?? "risk-adjusted"}
+            color={rf.is_measured ? "green" : "amber"}
           />
         </div>
       </div>

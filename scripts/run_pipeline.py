@@ -22,6 +22,8 @@ import factor_engine
 from portfolio_construction import PortfolioConstraints, build_target_weights
 from stock_backtest import CostModel, stock_level_returns, summarize
 import performance_stats
+import risk_free
+import coverage_audit
 import experiment_manifest
 import data_freshness
 
@@ -916,6 +918,27 @@ def factor_scoring_agent(conn, regime_preds, excluded=frozenset()):
                 f: dict(list(d.items())[:20]) for f, d in coverage_report.items()
             },
         })
+
+
+    # A count of withheld scores is a symptom. This names the cause: which
+    # symbols are structurally outside the fundamental factors because their
+    # sector reports on different conventions (every bank here), and which are
+    # a genuine ingestion gap instead.
+    _audit = coverage_audit.analyse(
+        str(INPUT_DB), sorted({r["month"] for r in baskets}),
+    )
+    if _audit.get("available"):
+        write_json("fundamental_coverage_audit", _audit)
+        _sc = _audit["summary"]
+        _bc = _sc.get("by_classification", {})
+        print(
+            f"  Fundamental coverage: {_sc.get('total_symbols')} symbols -- "
+            f"{_bc.get('measured', 0)} measured, "
+            f"{_bc.get('structurally_excluded', 0)} structurally out "
+            f"({_sc.get('structural_sector_exposure_pct', 0)}%), "
+            f"{_bc.get('sparse', 0)} sparse, "
+            f"{_bc.get('unexplained_gap', 0)} unexplained"
+        )
     write_csv("factor_baskets_monthly", baskets, ["month","factor_name","symbol","factor_score","factor_rank","selected_flag"])
     print(f"[FactorScoringAgent] Done. {len(baskets)} basket entries.")
     return baskets, list(factor_map.keys())
@@ -1417,6 +1440,7 @@ def portfolio_transition_agent(conn, baskets, allocations, regime_preds, exclude
                 "factor_sources": info["factors"],
                 "combined_score": round(info["score"], 6),
                 "regime_label": regime_label,
+                "sector": stock_sector.get(sym, "Unknown"),
                 "allocation_method": "constrained_water_fill",
                 "cash_residual": round(allocation.cash_residual, 6),
             })
@@ -1510,6 +1534,8 @@ def portfolio_transition_agent(conn, baskets, allocations, regime_preds, exclude
             "cash": round(1.0 - _inv, 6),
             "max_weight": round(_mx, 6),
             "max_sector_weight": round(_maxsec, 6),
+            "sector_exposure": {k: round(v, 4) for k, v in sorted(
+                _sec.items(), key=lambda kv: -kv[1])[:8]},
             # Weights are persisted rounded to 6dp, so a sector summing to
             # 0.3000004 reads as 0.300001. The tolerance matches the stored
             # precision rather than exact float equality, so a genuine breach
@@ -1534,7 +1560,7 @@ def portfolio_transition_agent(conn, baskets, allocations, regime_preds, exclude
         )
 
     write_json("portfolio_targets", portfolio_targets)
-    write_csv("portfolio_targets_monthly", portfolio_targets, ["month","symbol","target_weight","factor_sources","combined_score","regime_label","allocation_method"])
+    write_csv("portfolio_targets_monthly", portfolio_targets, ["month","symbol","sector","target_weight","factor_sources","combined_score","regime_label","allocation_method"])
 
     write_json("rebalance_trades", rebalance_trades)
     write_csv("rebalance_trades_monthly", rebalance_trades, ["month","symbol","signal_type","old_weight","new_weight","weight_change","signal_price","regime_label","regime_confidence","transition_risk","primary_factor","reason"])
@@ -1717,11 +1743,18 @@ def backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_
             # Sections 21-23: cost ladder, extended risk metrics, and
             # confidence intervals on the headline numbers.
             #
-            # Sharpe on the dashboard above is computed against a zero
-            # risk-free rate, which inflates it by roughly 0.5 against a 6.5%
-            # Indian assumption. Both are reported here so the reader is never
-            # comparing an excess-of-zero number with an excess-of-cash one.
-            report = performance_stats.full_report(stock_rows, bench_prices)
+            # Sharpe uses the measured Indian 10-year G-Sec yield rather than
+            # an assumed constant. macro_monthly carries it for every month of
+            # the backtest, so there was never a reason to guess -- and
+            # guessing 6.5% against a realised 7.24% mean overstated the
+            # result. The report records which basis produced the number.
+            rf_loaded = risk_free.load_series(str(INPUT_DB))
+            rf_aligned = risk_free.resolve(rf_loaded, [r["month"] for r in stock_rows])
+            rf_meta = risk_free.describe(rf_loaded, rf_aligned)
+            report = performance_stats.full_report(
+                stock_rows, bench_prices,
+                rf_rates=rf_aligned["rates"], rf_meta=rf_meta,
+            )
             if report:
                 report["cost_model"] = cost.describe()
                 write_json("backtest_performance_report", report)
@@ -1729,9 +1762,23 @@ def backtest_agent(conn, allocations, rebalance_trades, regime_preds, portfolio_
                 vb = report.get("vs_benchmark", {})
                 mt = report.get("mean_return_test", {})
                 ci = report.get("confidence_intervals", {})
+                rf_blk = report["risk_free_assumption"]
+                if rf_blk.get("is_measured"):
+                    print(
+                        f"    Risk-free: MEASURED {rf_blk['instrument']}, mean "
+                        f"{(rf_blk.get('mean_annual') or 0) * 100:.2f}% over "
+                        f"{rf_blk.get('months_observed')} months, range "
+                        f"{(rf_blk.get('min_annual') or 0) * 100:.2f}-"
+                        f"{(rf_blk.get('max_annual') or 0) * 100:.2f}%"
+                    )
+                else:
+                    print(
+                        f"    Risk-free: ASSUMED constant "
+                        f"{rf_blk.get('annual', 0) * 100:.2f}% (no series found)"
+                    )
                 print(
-                    f"    Sharpe vs {report['risk_free_assumption']['annual']*100:.1f}% rf: "
-                    f"{ra.get('sharpe_vs_rf', 0):.2f}  (vs 0%: {ra.get('sharpe_vs_zero', 0):.2f})"
+                    f"    Sharpe vs risk-free: {ra.get('sharpe_vs_rf', 0):.2f}"
+                    f"  (vs 0% rate: {ra.get('sharpe_vs_zero', 0):.2f})"
                 )
                 if vb:
                     print(

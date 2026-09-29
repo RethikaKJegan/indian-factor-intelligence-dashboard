@@ -3,9 +3,10 @@ import {
   getExperimentManifest,
   getPerformanceReport,
   getConstraintCompliance,
+  getCoverageAudit,
   formatNumber,
 } from "@/lib/data";
-import type { ManifestCaveat, DataFreshness } from "@/types";
+import type { ManifestCaveat, DataFreshness, FundamentalCoverageAudit } from "@/types";
 
 /**
  * Model Integrity.
@@ -80,6 +81,7 @@ export function ModelIntegrityPage() {
 
   const { run, inputs, code, caveats, caveat_summary: summary } = manifest;
   const freshness = manifest.data_freshness;
+  const audit = getCoverageAudit();
   const tables = Object.entries(inputs.tables).filter(([, t]) => t.present);
   const nonDeterministic = manifest.determinism.filter((d) => !d.deterministic);
   const sortedCaveats = [...caveats].sort(caveatSort);
@@ -221,6 +223,9 @@ export function ModelIntegrityPage() {
           })}
         </div>
       </Card>
+
+      {/* Why the fundamental factors see what they see. */}
+      {audit && audit.available && <CoverageCard audit={audit} />}
 
       {/* Reproducibility: stage by stage. */}
       <Card
@@ -469,6 +474,118 @@ function CheckRow({
         </p>
       </div>
     </div>
+  );
+}
+
+/**
+ * Which symbols the fundamental factors can actually see, and why the rest are
+ * invisible.
+ *
+ * A raw count of withheld scores says something is missing. It does not say
+ * that the missing part is the entire banking sector, which is a different
+ * problem with a different fix: not an outage, but a sector whose reporting
+ * conventions have no counterpart in the metrics being computed.
+ */
+function CoverageCard({ audit }: { audit: FundamentalCoverageAudit }) {
+  const bc = audit.summary.by_classification;
+  const total = audit.summary.total_symbols || 1;
+  const struct = bc.structurally_excluded ?? 0;
+  const gap = bc.unexplained_gap ?? 0;
+  const sparse = bc.sparse ?? 0;
+  const measured = bc.measured ?? 0;
+
+  const classes = [
+    { key: "measured", label: "Measured", n: measured, color: "green" as const },
+    {
+      key: "structurally_excluded",
+      label: "Structurally out",
+      n: struct,
+      color: "amber" as const,
+    },
+    { key: "sparse", label: "Sparse", n: sparse, color: "amber" as const },
+    {
+      key: "unexplained_gap",
+      label: "Ingestion gap",
+      n: gap,
+      color: "red" as const,
+    },
+  ];
+
+  return (
+    <Card
+      title="What the fundamental factors can see"
+      subtitle={`${total} symbols, classified by whether the Value and Quality metrics exist at all`}
+    >
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {classes.map((c) => (
+          <StatCard
+            key={c.key}
+            label={c.label}
+            value={String(c.n)}
+            subvalue={`${((100 * c.n) / total).toFixed(0)}% of universe`}
+            color={c.color}
+          />
+        ))}
+      </div>
+
+      {/* Proportion bar, so the shape of the exclusion is visible at a glance. */}
+      <div className="mt-4">
+        <div className="flex h-3 rounded-full overflow-hidden bg-slate-100">
+          {classes.map((c) =>
+            c.n > 0 ? (
+              <div
+                key={c.key}
+                className={
+                  c.key === "measured"
+                    ? "bg-emerald-500"
+                    : c.key === "unexplained_gap"
+                      ? "bg-red-400"
+                      : "bg-amber-400"
+                }
+                style={{ width: `${(100 * c.n) / total}%` }}
+                title={`${c.label}: ${c.n}`}
+              />
+            ) : null,
+          )}
+        </div>
+      </div>
+
+      {struct > 0 && (
+        <div className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3">
+          <p className="text-xs text-amber-900 leading-relaxed">
+            <span className="font-semibold">
+              {struct} symbols ({((100 * struct) / total).toFixed(0)}%) are
+              structurally invisible to Value and Quality
+            </span>
+            , and every one of them is in{" "}
+            {audit.structurally_excluded_sectors.join(", ") || "a sector whose reporting differs"}.
+            A bank has no revenue line to grow, and its deposits are not debt in
+            the sense a debt/equity ratio assumes. This is an economic fact, not
+            an ingestion failure, and no amount of pipeline work changes it —
+            only bank-specific metrics (NIM, GNPA, PCR, CASA) would. Momentum
+            and Low Volatility are price-based and still cover these names.
+          </p>
+        </div>
+      )}
+
+      {gap > 0 && (
+        <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-3">
+          <p className="text-xs text-red-900 leading-relaxed">
+            <span className="font-semibold">
+              {gap} genuine ingestion {gap === 1 ? "gap" : "gaps"}
+            </span>
+            : {audit.unexplained.join(", ")} have fundamental rows but no
+            populated metric in any month. Unlike the banks, this is a
+            collection failure rather than a reporting convention, and the
+            coverage rule correctly withholds their scores rather than guessing.
+          </p>
+        </div>
+      )}
+
+      <p className="text-xs text-slate-500 mt-3 leading-relaxed">
+        {audit.note}
+      </p>
+    </Card>
   );
 }
 

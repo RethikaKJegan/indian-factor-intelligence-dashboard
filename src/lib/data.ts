@@ -34,6 +34,7 @@ import type {
   CostScenarioTable,
   PortfolioConstraintCompliance,
   ExperimentManifest,
+  FundamentalCoverageAudit,
 } from "@/types";
 import { REGIME_LABELS } from "@/types";
 
@@ -81,6 +82,7 @@ let performanceReport: PerformanceReport | null = null;
 let costScenarios: CostScenarioTable | null = null;
 let constraintCompliance: PortfolioConstraintCompliance | null = null;
 let experimentManifest: ExperimentManifest | null = null;
+let coverageAudit: FundamentalCoverageAudit | null = null;
 let dashboardDataLoaded = false;
 
 const DATA_BASE = "/data";
@@ -138,6 +140,7 @@ export async function loadDashboardData(): Promise<void> {
     costScenariosJson,
     constraintComplianceJson,
     experimentManifestJson,
+    coverageAuditJson,
   ] = await Promise.all([
     fetchDataFile<RegimePrediction[]>("regime_predictions"),
     fetchDataFile<FactorBasketEntry[]>("factor_baskets"),
@@ -168,6 +171,9 @@ export async function loadDashboardData(): Promise<void> {
       "portfolio_constraint_compliance",
     ),
     fetchOptionalDataFile<ExperimentManifest>("experiment_manifest"),
+    fetchOptionalDataFile<FundamentalCoverageAudit>(
+      "fundamental_coverage_audit",
+    ),
   ]);
 
   regimes = regimesJson;
@@ -197,6 +203,7 @@ export async function loadDashboardData(): Promise<void> {
   costScenarios = costScenariosJson;
   constraintCompliance = constraintComplianceJson;
   experimentManifest = experimentManifestJson;
+  coverageAudit = coverageAuditJson;
   dashboardDataLoaded = true;
 }
 
@@ -396,6 +403,14 @@ export function getConstraintCompliance(): PortfolioConstraintCompliance | null 
  */
 export function getExperimentManifest(): ExperimentManifest | null {
   return experimentManifest;
+}
+
+/**
+ * Why each symbol is or is not visible to the fundamental factors, which is
+ * the cause behind the withheld-score count.
+ */
+export function getCoverageAudit(): FundamentalCoverageAudit | null {
+  return coverageAudit;
 }
 
 export function getOverviewData(): OverviewData | null {
