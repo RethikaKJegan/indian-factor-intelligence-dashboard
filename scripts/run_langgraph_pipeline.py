@@ -25,6 +25,15 @@ import run_pipeline as rp
 
 class PipelineState(TypedDict, total=False):
     conn: sqlite3.Connection
+    #: ISO-8601 start of this run, injected by main().
+    #:
+    #: It has to be declared here. LangGraph filters the state to the keys of
+    #: this TypedDict, so a key passed to app.invoke() that is not declared is
+    #: silently dropped -- and write_manifest_node then read None, fell back to
+    #: "now", and reported a runtime of 0 seconds for a run that took 20. The
+    #: manifest is the provenance record; it must not assert a duration it did
+    #: not measure.
+    started_at: str
     validation_report: dict[str, Any]
     symbols: list[str]
     excluded: set[str]
@@ -258,7 +267,21 @@ def write_manifest_node(state: PipelineState) -> PipelineState:
     A failure here must not fail the run: the artifacts are already written
     and valid. It has to be loud, though.
     """
-    started = state.get("started_at") or datetime.now(timezone.utc)
+    started = None
+    raw = state.get("started_at")
+    if raw:
+        try:
+            started = datetime.fromisoformat(str(raw))
+        except ValueError:
+            started = None
+    if started is None:
+        print(
+            "[Manifest] WARNING: no start time in the pipeline state; the "
+            "manifest's runtime will read as zero rather than the real "
+            "duration. This means PipelineState is missing started_at, and "
+            "LangGraph is dropping the key."
+        )
+        started = datetime.now(timezone.utc)
     try:
         manifest = rp.experiment_manifest.build_manifest(
             str(rp.INPUT_DB), str(rp.SCRIPT_DIR), str(rp.JSON_DIR),
@@ -326,9 +349,10 @@ def main():
     print("Indian Regime/Factor/Portfolio LangGraph Orchestration")
     print("=" * 60)
     app = build_graph()
-    # `started_at` is threaded through state so the manifest reports the real
-    # wall-clock runtime rather than the time since the last node finished.
-    app.invoke({"started_at": started})
+    # `started_at` must be declared in PipelineState: LangGraph drops invoke
+    # keys that the state schema does not name, which silently cost this run
+    # its measured runtime in the manifest.
+    app.invoke({"started_at": started.isoformat()})
     print("=" * 60)
     print("LangGraph pipeline complete.")
     print(f"  JSON outputs: {rp.JSON_DIR}")
