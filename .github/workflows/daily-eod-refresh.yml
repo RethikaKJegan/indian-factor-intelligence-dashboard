@@ -91,8 +91,29 @@ jobs:
           # stored snapshot instead, for a byte-exact re-run.
           NEWS_REPLAY: "0"
 
+      # Informational only. It must never fail the job, because failing here
+      # skips the commit below and the whole day's work is thrown away.
+      #
+      # It did exactly that on 2026-09-29: verify_data.py exits 1 when the data
+      # is merely one trading day behind, which is the NORMAL state at 18:00
+      # IST because NSE publishes bhavcopy after that. A bare call here failed
+      # the step, skipped the commit, and published nothing -- while the run
+      # above it had succeeded and written correct output to the workspace.
+      #
+      # Gating belongs in the earlier step, before anything is generated. This
+      # one only reports, so its exit code is discarded.
       - name: Re-verify after the pipeline
-        run: python scripts/verify_data.py
+        run: |
+          set +e
+          python scripts/verify_data.py
+          code=$?
+          set -e
+          if [ $code -ne 0 ]; then
+            echo "::warning::Post-pipeline freshness check exited $code (1 = behind, 2 = stale). Reported for the record; the commit below still runs."
+          else
+            echo "Data is current after the pipeline run."
+          fi
+          exit 0
 
       - name: Commit updated data snapshot
         run: |
@@ -101,10 +122,22 @@ jobs:
           git add public/data data_input/processed_financial_data.sqlite
           if git diff --cached --quiet; then
             echo "No data changes to commit."
-          else
-            git commit -m "Update daily EOD data snapshot"
-            git push
+            exit 0
           fi
+          git commit -m "Update daily EOD data snapshot"
+          # `concurrency` serialises runs, so a conflict is unlikely, but a
+          # manual dispatch landing mid-run would produce a non-fast-forward
+          # and silently discard a full day of work. Rebase once and retry.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Pushed on attempt $attempt."
+              exit 0
+            fi
+            echo "Push failed (attempt $attempt); rebasing onto origin/main."
+            git pull --rebase --autostash origin main || true
+          done
+          echo "::error::Could not push after 3 attempts. The pipeline ran and produced correct output, but it is not on the remote."
+          exit 1
 
       # If the refresh is regularly failing, one red run is easy to miss among
       # a wall of green ones. This posts the reason to the run summary.
