@@ -869,10 +869,36 @@ construction. In the latest run 30.9% of articles name a constituent and 78
 are classified `off_topic`.
 
 ```text
+scripts/repair_fii_dii.py
+```
+
+Populates `macro_monthly.monthly_fii_flow` / `monthly_dii_flow` from the
+scraped daily FII/DII file. The columns were empty for all 414 months even
+though the source carries `fii_net` and `dii_net`; that was an ingestion gap,
+not a missing source.
+
+The source is **not** a full history despite its filename: 158 trading days
+covering 2026-01 onward. Eight month-ends are now populated and the earlier
+years are left null on purpose. Back-filling a flow series that was never
+observed would make the table look complete when it is not. The regime model
+drops `fii_dii_trend` below its 10% coverage floor, so no reported figure
+depends on these values. The script exits 0 when the scrape directory is
+absent, because a colleague cloning the repository has no `Downloads/data`.
+
+```text
+scripts/repair_eod_aggregates.py
+```
+
+Recomputes `daily_count` and `monthly_volume` for every month from
+`stock_prices_daily`. The EOD refresh had been accumulating them, reaching
+37-38 reported trading days against 5 stored; see the daily-refresh note
+above. A pure function of the daily table, so re-running is safe.
+
+```text
 scripts/test_dashboard_contracts.py
 ```
 
-Ten guard tests over the published artifacts, each tied to a fault that
+Twelve guard tests over the published artifacts, each tied to a fault that
 reached `public/data/*.json` and survived a pipeline rewrite because nothing
 checked for it. Run with `python scripts/test_dashboard_contracts.py` or
 `python -m pytest scripts/test_dashboard_contracts.py -q`.
@@ -883,5 +909,5 @@ checked for it. Run with `python scripts/test_dashboard_contracts.py` or
 - Index data may be unavailable from the NiftyIndices API on some runs; the script records this rather than inventing index rows.
 - RSS feeds are optional supporting evidence. The pipeline uses working Economic Times and Google News RSS feeds.
 - `market_index.json` publishes `open`/`high`/`low` as null with an `ohlc_note`: `market_index_monthly` stores a month-end close and no intraday range. These are the only deliberately-null columns, and a test asserts the note is present.
-- `macro_monthly.json` publishes `fii_net`/`dii_net` as null with a `flows_note`: the database columns `monthly_fii_flow` and `monthly_dii_flow` are empty for all 414 rows even though the scraped FII/DII CSV carries both. That is an ingestion gap in the database build, not an export fault, and it is stated rather than left to look like a bug.
+- `macro_monthly.json` publishes `fii_net`/`dii_net` with a `flows_note` on every row. Eight of 414 months are populated, from `scripts/repair_fii_dii.py`; the scrape holds 158 trading days of 2026 only. The earlier years are null on purpose, and nothing in the project depends on the values. The note is emitted whenever coverage is incomplete, not only when it is zero, so a partly-populated column is never presented as a whole one.
 - This is a research dashboard, not investment advice or an automated trading system.

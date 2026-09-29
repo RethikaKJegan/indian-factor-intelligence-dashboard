@@ -206,7 +206,27 @@ def backtest_node(state: PipelineState) -> PipelineState:
 
 
 def chart_signal_node(state: PipelineState) -> PipelineState:
-    return {"signal_events": rp.chart_signal_agent(state["conn"], state["rebalance_trades"], state["baskets"], state.get("excluded", set()))}
+    # The forward outlook is emitted from inside chart_signal_agent, so this node
+    # must hand it the artefacts the forecast is built from. Passing only the
+    # first four arguments left the graph path emitting no forecast at all --
+    # and because the graph is what the scheduled workflow runs, the dashboard
+    # would have quietly lost the panel on every automated refresh while a
+    # local `run_pipeline.py` still showed it. The two entry points must supply
+    # the same inputs or the published data depends on how it was launched.
+    return {
+        "signal_events": rp.chart_signal_agent(
+            state["conn"],
+            state["rebalance_trades"],
+            state["baskets"],
+            state.get("excluded", set()),
+            news_features=state.get("news_features"),
+            allocations=state.get("allocations"),
+            regime_preds=state.get("regime_preds"),
+            diagnostics=state.get("diagnostics"),
+            portfolio_targets=state.get("portfolio_targets"),
+            decisions=state.get("decisions"),
+        )
+    }
 
 
 def explanation_node(state: PipelineState) -> PipelineState:

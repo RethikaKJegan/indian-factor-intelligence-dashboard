@@ -2251,21 +2251,31 @@ def chart_signal_agent(conn, rebalance_trades, baskets, excluded=frozenset(),
                 "fii_net": safe_float(d.get("fii_net")),
                 "dii_net": safe_float(d.get("dii_net")),
             })
-        # `fii_net` / `dii_net` are null for every row. That is a source gap,
-        # not a broken export: `monthly_fii_flow` and `monthly_dii_flow` hold
-        # zero non-null values in the database, even though the scraped FII/DII
-        # CSV carries `fii_net` and `dii_net` columns. The ingestion step that
-        # built the table did not map them. Publishing them as null without a
-        # note would look like a bug in this exporter, so the cause is stated
-        # here and in the run report instead.
-        if all(row["fii_net"] is None and row["dii_net"] is None for row in macro) and macro:
-            for row in macro:
-                row["flows_note"] = (
-                    "FII/DII flows are null for every month: the database columns "
-                    "monthly_fii_flow and monthly_dii_flow are empty, although the "
-                    "scraped source carries fii_net and dii_net. Ingestion gap, "
-                    "not an export fault."
+        # FII/DII coverage is partial, and the published note must say so.
+        #
+        # `scripts/repair_fii_dii.py` populates the columns from the scraped
+        # daily file, which covers 2026-01 onward only -- 158 trading days
+        # against a 414-month table. The earlier years are left null rather than
+        # back-filled: a flow series that looked complete back to 1992 but had
+        # been synthesised would be worse than an obviously short one.
+        #
+        # The regime model drops `fii_dii_trend` below its 10% coverage floor,
+        # so no figure in this project depends on these values. The note is
+        # emitted whenever coverage is incomplete, not only when it is zero, so
+        # a reader never sees a partly-populated column presented as a whole one.
+        if macro:
+            _filled = sum(1 for row in macro if row["fii_net"] is not None)
+            if _filled < len(macro):
+                _note = (
+                    f"FII/DII flows are populated for {_filled} of {len(macro)} months "
+                    f"({_filled / len(macro) * 100:.0f}%), covering 2026 onward. The "
+                    "scrape holds 158 trading days of daily fii_net/dii_net; earlier "
+                    "years were never observed and are left null rather than "
+                    "back-filled. Nothing in this project depends on these values: "
+                    "the regime model drops fii_dii_trend below its coverage floor."
                 )
+                for row in macro:
+                    row["flows_note"] = _note
         write_json("macro_monthly", macro)
     except Exception:
         write_json("macro_monthly", [])
