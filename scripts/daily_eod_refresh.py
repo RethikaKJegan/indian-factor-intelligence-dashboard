@@ -718,6 +718,15 @@ def write_status(status: dict) -> None:
     STATUS_PATH.write_text(json.dumps(status, indent=2, default=str), encoding="utf-8")
 
 
+def read_status() -> dict | None:
+    if not STATUS_PATH.exists():
+        return None
+    try:
+        return json.loads(STATUS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", default=dt.date.today().isoformat(), help="Target EOD date, YYYY-MM-DD")
@@ -731,6 +740,9 @@ def main() -> int:
     requested = parse_date(args.date)
     baseline = parse_date(args.baseline_eod) if args.baseline_eod else None
     run_id = started.strftime("%Y%m%dT%H%M%SZ")
+    previous_success = read_status()
+    if not previous_success or previous_success.get("status") != "ok" or not previous_success.get("resolved_date"):
+        previous_success = None
     status = {
         "run_id": run_id,
         "requested_date": requested.isoformat(),
@@ -757,7 +769,22 @@ def main() -> int:
     try:
         stocks_df, resolved_date, source = download_latest_stock_eod(conn, requested, args.lookback_days, args.sleep)
         if stocks_df.empty or resolved_date is None:
-            status.update({"status": "no_data", "message": f"No NSE EOD bhavcopy found. Attempts: {source}"})
+            no_data_message = f"No NSE EOD bhavcopy found. Attempts: {source}"
+            if previous_success:
+                status.update(previous_success)
+                status.update({
+                    "last_attempted_run_id": run_id,
+                    "last_attempted_date": requested.isoformat(),
+                    "last_attempted_status": "no_data",
+                    "last_attempted_message": no_data_message,
+                    "message": (
+                        f"Preserved last successful EOD {previous_success.get('resolved_date')} because the latest "
+                        f"attempt found no new NSE bhavcopy."
+                    ),
+                    "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                })
+            else:
+                status.update({"status": "no_data", "message": no_data_message})
             return_code = 0 if args.allow_no_data else 2
         else:
             stock_rows = upsert_dataframe(conn, "stock_prices_daily", stocks_df, ["date", "symbol"])

@@ -6,6 +6,13 @@ The project is built around the Nifty 200 universe and uses Indian market/factor
 
 ## Features
 
+- User-facing monthly trading assistant flow:
+  - Command Center
+  - Trade Plan
+  - Final Portfolio
+  - Stock Inspector
+  - Performance & Trust
+  - Advanced Research
 - Nifty 200 regime dashboard with 5 regime labels
 - Momentum, Value, Quality, and Low Volatility factor scoring
 - Dynamic event-driven decision gate:
@@ -78,10 +85,11 @@ Create your local environment file:
 copy .env.example .env
 ```
 
-Then edit `.env` and add your Groq API key if you want optional LLM explanations:
+Then edit `.env` and add your LLM key if you want optional LLM explanations:
 
 ```env
-GROQ_API_KEY=your_key_here
+GEMINI_API_KEY=your_key_here
+LLM_PROVIDER=gemini
 ```
 
 The dashboard can run from the committed JSON files immediately.
@@ -728,6 +736,40 @@ Website only:
 ```powershell
 npm run dev:5174
 ```
+
+## Product Flow Added
+
+The product now defaults to a simpler end-user workflow:
+
+```text
+Command Center
+  -> Trade Plan
+  -> Final Portfolio
+  -> Stock Inspector
+  -> Performance & Trust
+  -> Advanced Research
+```
+
+The Trade Plan page can accept holdings manually or through CSV import. It converts model target weights into exact share quantities:
+
+```text
+You have X shares.
+The model wants Y shares.
+Today you should buy/sell Z shares.
+```
+
+Holdings are stored in browser `localStorage` in this slice. Backend account storage can be added later.
+
+The daily execution overlay is currently deterministic:
+
+```text
+Normal  -> execute full monthly plan
+Caution -> stagger new buys
+Danger  -> pause new buys
+Extreme -> defensive execution
+```
+
+The LLM must only explain these structured outputs. It must not decide trades or quantities.
 
 ## Automated Vercel Data Refresh
 

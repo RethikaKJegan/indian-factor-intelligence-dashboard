@@ -46,6 +46,8 @@ data_input/bhavcopy_cache/
 __pycache__/
 *.py[cod]
 *$py.class
+.venv/
+.python_deps/
 
 .vscode/*
 !.vscode/extensions.json
